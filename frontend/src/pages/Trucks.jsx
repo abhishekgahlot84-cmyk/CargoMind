@@ -13,12 +13,16 @@ import {
   Fuel,
   Eye,
   Gauge,
+  Wrench,
+  AlertTriangle,
+  ArrowRightLeft,
+  FileText,
 } from "lucide-react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
 
 const FUEL_TYPES = ["Diesel", "Petrol", "CNG", "Electric"];
-const TRUCK_STATUSES = ["available", "assigned", "in_maintenance", "inactive"];
+const TRUCK_STATUSES = ["available", "assigned", "maintenance", "in_maintenance", "inactive"];
 
 export default function Trucks() {
   const { user } = useAuth();
@@ -58,17 +62,142 @@ export default function Trucks() {
   const [viewingTruck, setViewingTruck] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
+  // Maintenance Suggestions State
+  const [suggestions, setSuggestions] = useState([]);
+
+  // Send to Maintenance modal state
+  const [showSendModal, setShowSendModal] = useState(false);
+  const [truckToSend, setTruckToSend] = useState(null);
+  const [replacementTrucks, setReplacementTrucks] = useState([]);
+  const [selectedReplacementId, setSelectedReplacementId] = useState("");
+  const [maintenanceReason, setMaintenanceReason] = useState("");
+  const [submittingAction, setSubmittingAction] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  // Mark Maintained modal state
+  const [showMarkModal, setShowMarkModal] = useState(false);
+  const [truckToMark, setTruckToMark] = useState(null);
+  const [markForm, setMarkForm] = useState({
+    maintenance_type: "Periodic Preventive Service",
+    cost: "15000",
+    notes: "Routine inspection, engine oil replacement, and brake pad servicing.",
+    performed_by: "Central Fleet Depot Workshop",
+  });
+
+  // Maintenance Log history modal state
+  const [showLogsModal, setShowLogsModal] = useState(false);
+  const [selectedTruckForLogs, setSelectedTruckForLogs] = useState(null);
+  const [truckLogs, setTruckLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+
+  async function fetchSuggestions() {
+    try {
+      const res = await api.get("/maintenance/suggestions");
+      setSuggestions(res.data?.suggestions || []);
+    } catch (e) {
+      console.warn("Could not load maintenance suggestions:", e);
+    }
+  }
+
   async function fetchTrucks() {
     try {
       setLoading(true);
       setError("");
-      const res = await api.get("/trucks/");
-      setTrucks(Array.isArray(res.data) ? res.data : []);
+      const [trucksRes] = await Promise.all([
+        api.get("/trucks/"),
+        fetchSuggestions(),
+      ]);
+      setTrucks(Array.isArray(trucksRes.data) ? trucksRes.data : []);
     } catch (err) {
       console.error("Failed to fetch trucks:", err);
       setError("Unable to load fleet vehicles. Please verify backend connectivity.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleOpenSendModal(truck, suggestion = null) {
+    setTruckToSend(truck);
+    setMaintenanceReason(suggestion?.message || `Scheduled service after ${truck.trips_since_service || 0} trips`);
+    setActionError("");
+    setSelectedReplacementId("");
+    setShowSendModal(true);
+
+    try {
+      const res = await api.get(`/maintenance/replacements/${truck.id}`);
+      setReplacementTrucks(res.data?.replacements || []);
+    } catch {
+      setReplacementTrucks([]);
+    }
+  }
+
+  async function handleConfirmSendMaintenance() {
+    if (!truckToSend) return;
+    setSubmittingAction(true);
+    setActionError("");
+
+    try {
+      await api.post("/maintenance/send-to-maintenance", {
+        truck_id: truckToSend.id,
+        replacement_truck_id: selectedReplacementId ? Number(selectedReplacementId) : null,
+        reason: maintenanceReason,
+        notes: "Servicing scheduled via Fleet Management",
+      });
+      setShowSendModal(false);
+      await fetchTrucks();
+    } catch (err) {
+      setActionError(err.response?.data?.detail || "Failed to send truck to maintenance.");
+    } finally {
+      setSubmittingAction(false);
+    }
+  }
+
+  function handleOpenMarkModal(truck) {
+    setTruckToMark(truck);
+    setMarkForm({
+      maintenance_type: "Periodic Preventive Service",
+      cost: "15000",
+      notes: "Routine inspection, engine oil replacement, and brake pad servicing.",
+      performed_by: "Central Fleet Depot Workshop",
+    });
+    setActionError("");
+    setShowMarkModal(true);
+  }
+
+  async function handleConfirmMarkMaintained() {
+    if (!truckToMark) return;
+    setSubmittingAction(true);
+    setActionError("");
+
+    try {
+      await api.post("/maintenance/mark-maintained", {
+        truck_id: truckToMark.id,
+        maintenance_type: markForm.maintenance_type,
+        cost: markForm.cost ? Number(markForm.cost) : 0,
+        notes: markForm.notes,
+        performed_by: markForm.performed_by,
+      });
+      setShowMarkModal(false);
+      await fetchTrucks();
+    } catch (err) {
+      setActionError(err.response?.data?.detail || "Failed to mark vehicle as maintained.");
+    } finally {
+      setSubmittingAction(false);
+    }
+  }
+
+  async function handleOpenLogs(truck) {
+    setSelectedTruckForLogs(truck);
+    setShowLogsModal(true);
+    setLoadingLogs(true);
+
+    try {
+      const res = await api.get(`/maintenance/logs/${truck.id}`);
+      setTruckLogs(res.data?.logs || []);
+    } catch {
+      setTruckLogs([]);
+    } finally {
+      setLoadingLogs(false);
     }
   }
 
@@ -278,7 +407,7 @@ export default function Trucks() {
       </header>
 
       {/* KPI Cards */}
-      <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-3">
+      <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <div className="apple-card p-6">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">Total Vehicles</span>
@@ -311,7 +440,135 @@ export default function Trucks() {
           </p>
           <p className="mt-1 text-xs text-[#86868b]">Currently en route</p>
         </div>
+
+        <div className="apple-card p-6">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">Maintenance Attention</span>
+            <Wrench size={18} className="text-amber-500" />
+          </div>
+          <p className="mt-4 text-3xl font-semibold tracking-tight text-amber-500">
+            {loading ? "—" : suggestions.length + trucks.filter((t) => t.status === "maintenance" || t.status === "in_maintenance").length}
+          </p>
+          <p className="mt-1 text-xs text-[#86868b]">Vehicles due / grounded</p>
+        </div>
       </div>
+
+      {/* Maintenance Suggestion Cards Section */}
+      {suggestions.length > 0 && (
+        <div className="mb-8">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
+                <AlertTriangle size={18} className="text-amber-500" />
+                Fleet Maintenance Suggestions ({suggestions.length})
+              </h2>
+              <p className="text-xs text-[#6e6e73] dark:text-[#86868b]">
+                Automated threshold monitoring: Service warning at ≥ 20 trips, service due at ≥ 30 trips.
+              </p>
+            </div>
+            <span className="apple-badge bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium">
+              Action Required
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {suggestions.map((sug) => {
+              const truckObj = trucks.find((t) => t.id === sug.truck_id) || {
+                id: sug.truck_id,
+                registration_number: sug.registration_number,
+                capacity: sug.capacity,
+                model: sug.model,
+                trips_since_service: sug.trips_since_service,
+                km_since_service: sug.km_since_service,
+                status: sug.status,
+              };
+
+              return (
+                <div
+                  key={sug.truck_id}
+                  className={`apple-card p-5 border flex flex-col justify-between transition ${
+                    sug.urgency === "due"
+                      ? "border-red-500/30 bg-red-500/[0.02] dark:bg-red-500/[0.04]"
+                      : "border-amber-500/30 bg-amber-500/[0.02] dark:bg-amber-500/[0.04]"
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {sug.registration_number}
+                        </span>
+                        <span className="text-xs text-[#86868b]">
+                          {sug.model}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold border ${
+                          sug.urgency === "due"
+                            ? "bg-red-500/10 text-red-600 border-red-500/25 dark:bg-red-500/20 dark:text-red-400"
+                            : "bg-amber-500/10 text-amber-600 border-amber-500/25 dark:bg-amber-500/20 dark:text-amber-400"
+                        }`}
+                      >
+                        <Wrench size={10} />
+                        {sug.urgency === "due" ? "Service Due (≥30 trips)" : "Service Recommended (≥20 trips)"}
+                      </span>
+                    </div>
+
+                    <p className="mt-2 text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      {sug.message}
+                    </p>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-[#6e6e73] dark:text-[#86868b]">
+                      <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2">
+                        <span className="block text-[10px] text-[#86868b]">Completed Trips</span>
+                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {sug.trips_since_service} trips
+                        </span>
+                      </div>
+                      <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2">
+                        <span className="block text-[10px] text-[#86868b]">Km Since Svc</span>
+                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {sug.km_since_service ? Math.round(sug.km_since_service).toLocaleString() : 0} km
+                        </span>
+                      </div>
+                      <div className="rounded-lg bg-black/[0.02] dark:bg-white/[0.03] p-2">
+                        <span className="block text-[10px] text-[#86868b]">Capacity</span>
+                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {sug.capacity} T
+                        </span>
+                      </div>
+                    </div>
+
+                    {sug.active_trip && (
+                      <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-2.5 text-[11px] text-amber-800 dark:text-amber-200">
+                        <span className="font-semibold">Active Trip #{sug.active_trip.id} ({sug.active_trip.origin} → {sug.active_trip.destination}):</span> Immediate grounding blocked until trip completes. Replacement truck will be scheduled for next run.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => handleOpenSendModal(truckObj, sug)}
+                      className="apple-btn-secondary text-xs py-1.5 flex items-center gap-1.5"
+                    >
+                      <ArrowRightLeft size={13} />
+                      Send to Maintenance
+                    </button>
+                    <button
+                      onClick={() => handleOpenMarkModal(truckObj)}
+                      className="apple-btn-primary text-xs py-1.5 flex items-center gap-1.5"
+                    >
+                      <CheckCircle2 size={13} />
+                      Mark as Maintained
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Search & Filter Bar */}
       <div className="apple-card p-4 mb-8 flex flex-wrap items-center justify-between gap-3">
@@ -377,91 +634,141 @@ export default function Trucks() {
               <thead className="border-b border-black/[0.06] bg-black/[0.02] text-[11px] font-semibold uppercase tracking-wider text-[#86868b] dark:border-white/[0.08] dark:bg-white/[0.02]">
                 <tr>
                   <th className="px-6 py-3.5">ID</th>
-                  <th className="px-6 py-3.5">Registration</th>
-                  <th className="px-6 py-3.5">Model & Year</th>
-                  <th className="px-6 py-3.5">Payload Capacity</th>
-                  <th className="px-6 py-3.5">Speed (Avg / Max)</th>
+                  <th className="px-6 py-3.5">Registration & Model</th>
+                  <th className="px-6 py-3.5">Payload & Speed</th>
                   <th className="px-6 py-3.5">Fuel & Economy</th>
+                  <th className="px-6 py-3.5">Service Health</th>
                   <th className="px-6 py-3.5">Status</th>
                   <th className="px-6 py-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.06]">
-                {filteredTrucks.map((truck) => (
-                  <tr key={truck.id} className="hover:bg-black/[0.015] dark:hover:bg-white/[0.02] transition-colors">
-                    <td className="px-6 py-4 font-mono text-xs text-[#86868b]">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">#{truck.id}</span>
-                        <span className="text-[10px] text-[#0071e3] dark:text-[#2997ff] font-sans font-medium">
-                          User #{truck.user_id || user?.id || 1}
+                {filteredTrucks.map((truck) => {
+                  const tripsSince = truck.trips_since_service || 0;
+                  const isDue = tripsSince >= 30;
+                  const isWarning = tripsSince >= 20;
+
+                  return (
+                    <tr key={truck.id} className="hover:bg-black/[0.015] dark:hover:bg-white/[0.02] transition-colors">
+                      <td className="px-6 py-4 font-mono text-xs text-[#86868b]">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">#{truck.id}</span>
+                          <span className="text-[10px] text-[#0071e3] dark:text-[#2997ff] font-sans font-medium">
+                            User #{truck.user_id || user?.id || 1}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {truck.registration_number || `Truck #${truck.id}`}
+                        </p>
+                        <p className="text-[11px] text-[#86868b]">
+                          {truck.model || "Heavy Hauler"} {truck.year ? `(${truck.year})` : ""}
+                        </p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {truck.capacity ? `${Number(truck.capacity).toLocaleString()} kg` : "—"}
+                        </p>
+                        <p className="text-[10px] text-[#86868b]">
+                          {truck.avg_speed_kmph || 45} km/h avg · max {truck.max_speed_kmph || 80}
+                        </p>
+                      </td>
+                      <td className="px-6 py-4 text-[#6e6e73] dark:text-[#86868b]">
+                        <span className="font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                          {truck.mileage_kmpl || truck.fuel_efficiency || "4.5"} km/L
                         </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                      {truck.registration_number || `Truck #${truck.id}`}
-                    </td>
-                    <td className="px-6 py-4 text-[#6e6e73] dark:text-[#86868b]">
-                      {truck.model || "Standard"} {truck.year ? `(${truck.year})` : ""}
-                    </td>
-                    <td className="px-6 py-4 font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
-                      {truck.capacity ? `${Number(truck.capacity).toLocaleString()} kg` : "—"}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                          {truck.avg_speed_kmph || 45} / {truck.max_speed_kmph || 80} km/h
+                        <p className="text-[10px] text-[#86868b]">{truck.fuel_type || "Diesel"}</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                              {tripsSince} trips
+                            </span>
+                            {isDue ? (
+                              <span className="apple-badge bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/25 text-[9px] py-0">
+                                Due (≥30)
+                              </span>
+                            ) : isWarning ? (
+                              <span className="apple-badge bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/25 text-[9px] py-0">
+                                Warn (≥20)
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="text-[10px] text-[#86868b]">
+                            {truck.km_since_service ? Math.round(truck.km_since_service).toLocaleString() : 0} km since service
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`apple-badge ${
+                          truck.status === "available"
+                            ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+                            : truck.status === "assigned"
+                            ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
+                            : truck.status === "maintenance" || truck.status === "in_maintenance"
+                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25"
+                            : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
+                        }`}>
+                          {truck.status === "maintenance" ? "Maintenance" : truck.status || "Unknown"}
                         </span>
-                        <span className="text-[10px] text-[#86868b]">
-                          Cruising: {truck.avg_speed_kmph || 45} km/h
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-[#6e6e73] dark:text-[#86868b]">
-                      {truck.fuel_type || "Diesel"} {truck.fuel_efficiency ? `• ${truck.fuel_efficiency} km/L` : ""}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`apple-badge ${
-                        truck.status === "available"
-                          ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
-                          : truck.status === "assigned"
-                          ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
-                          : truck.status === "in_maintenance"
-                          ? "bg-[#ff9500]/10 text-[#ff9500] dark:bg-[#ff9f0a]/15 dark:text-[#ff9f0a]"
-                          : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
-                      }`}>
-                        {truck.status || "Unknown"}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => {
-                            setViewingTruck(truck);
-                            setShowDetailsModal(true);
-                          }}
-                          className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
-                          title="View Vehicle Details & Speeds"
-                        >
-                          <Eye size={14} />
-                        </button>
-                        <button
-                          onClick={() => handleOpenEdit(truck)}
-                          className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
-                          title="Edit Vehicle"
-                        >
-                          <Edit2 size={14} />
-                        </button>
-                        <button
-                          onClick={() => handleOpenDelete(truck)}
-                          className="p-1 rounded-md text-[#86868b] hover:text-red-600 hover:bg-red-500/10 transition"
-                          title="Delete Vehicle"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleOpenLogs(truck)}
+                            className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
+                            title="Maintenance Service History"
+                          >
+                            <Wrench size={14} />
+                          </button>
+                          {truck.status === "maintenance" ? (
+                            <button
+                              onClick={() => handleOpenMarkModal(truck)}
+                              className="p-1 rounded-md text-[#34c759] hover:bg-[#34c759]/10 transition"
+                              title="Mark Servicing Complete"
+                            >
+                              <CheckCircle2 size={14} />
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleOpenSendModal(truck)}
+                              className="p-1 rounded-md text-amber-500 hover:bg-amber-500/10 transition"
+                              title="Send to Maintenance"
+                            >
+                              <ArrowRightLeft size={14} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => {
+                              setViewingTruck(truck);
+                              setShowDetailsModal(true);
+                            }}
+                            className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
+                            title="View Vehicle Details"
+                          >
+                            <Eye size={14} />
+                          </button>
+                          <button
+                            onClick={() => handleOpenEdit(truck)}
+                            className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
+                            title="Edit Vehicle"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button
+                            onClick={() => handleOpenDelete(truck)}
+                            className="p-1 rounded-md text-[#86868b] hover:text-red-600 hover:bg-red-500/10 transition"
+                            title="Delete Vehicle"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -817,6 +1124,323 @@ export default function Trucks() {
                 className="apple-btn-primary text-xs"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Send to Maintenance Modal */}
+      {showSendModal && truckToSend && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg apple-card p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <Wrench size={18} />
+                <h3 className="text-base font-semibold">Send Vehicle to Maintenance</h3>
+              </div>
+              <button
+                onClick={() => setShowSendModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] dark:border-white/[0.06] dark:bg-white/[0.02] p-3.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-sm font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    {truckToSend.registration_number || `Truck #${truckToSend.id}`}
+                  </span>
+                  <span className="apple-badge bg-amber-500/10 text-amber-600 dark:text-amber-400 capitalize">
+                    {truckToSend.status}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#86868b] mt-1">
+                  {truckToSend.model} · {truckToSend.capacity} Tons capacity · {truckToSend.trips_since_service || 0} completed trips
+                </p>
+              </div>
+
+              {truckToSend.status === "assigned" && (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  <span className="font-semibold block mb-0.5">⚠️ Active Trip En Route</span>
+                  This vehicle is currently on an active highway run. Immediate grounding is blocked, but scheduling will exclude it from any future load allocations and ground it immediately upon delivery.
+                </div>
+              )}
+
+              {/* Next Suggested Vehicle / Replacement selection */}
+              <div>
+                <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1.5">
+                  Next Suggested Vehicle (Replacement Truck)
+                </label>
+                <p className="text-[11px] text-[#86868b] mb-2">
+                  Select an available truck with similar or larger capacity ({truckToSend.capacity} T) to take over any planned trips:
+                </p>
+
+                {replacementTrucks.length === 0 ? (
+                  <div className="rounded-xl border border-black/[0.06] bg-black/[0.015] dark:border-white/[0.06] p-3 text-[#86868b]">
+                    No immediate replacement truck available in fleet with ≥ {truckToSend.capacity} T payload. Planned trips will be held for re-assignment.
+                  </div>
+                ) : (
+                  <select
+                    value={selectedReplacementId}
+                    onChange={(e) => setSelectedReplacementId(e.target.value)}
+                    className="apple-input text-xs w-full"
+                  >
+                    <option value="">-- No replacement (hold planned trips) --</option>
+                    {replacementTrucks.map((rep) => (
+                      <option key={rep.id} value={rep.id}>
+                        {rep.registration_number} · {rep.model || "Commercial"} ({rep.capacity} T · {rep.mileage_kmpl || "4.5"} km/L)
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Maintenance Reason / Defect Notes
+                </label>
+                <textarea
+                  rows={2}
+                  value={maintenanceReason}
+                  onChange={(e) => setMaintenanceReason(e.target.value)}
+                  className="apple-input text-xs w-full resize-none"
+                  placeholder="e.g. Periodic maintenance due, routine 30-trip inspection"
+                />
+              </div>
+
+              {actionError && (
+                <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-red-600 dark:text-red-400">
+                  {actionError}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 pt-3 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowSendModal(false)}
+                className="apple-btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSendMaintenance}
+                disabled={submittingAction}
+                className="apple-btn-primary text-xs"
+              >
+                {submittingAction ? "Processing..." : "Confirm & Send to Maintenance"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mark as Maintained Modal */}
+      {showMarkModal && truckToMark && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg apple-card p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2 text-[#34c759] dark:text-[#30d158]">
+                <CheckCircle2 size={18} />
+                <h3 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">Mark Vehicle as Maintained</h3>
+              </div>
+              <button
+                onClick={() => setShowMarkModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] dark:border-white/[0.06] dark:bg-white/[0.02] p-3.5">
+                <span className="font-mono text-sm font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  {truckToMark.registration_number || `Truck #${truckToMark.id}`}
+                </span>
+                <p className="text-[11px] text-[#86868b] mt-0.5">
+                  Completed {truckToMark.trips_since_service || 0} trips · {truckToMark.km_since_service ? Math.round(truckToMark.km_since_service) : 0} km since last service
+                </p>
+                <div className="mt-2 text-[11px] text-[#34c759] dark:text-[#30d158] font-medium">
+                  ✓ This action will reset trips_since_service to 0, km_since_service to 0, update last_service_date to today, and restore truck status to available.
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Service / Maintenance Type
+                </label>
+                <input
+                  type="text"
+                  value={markForm.maintenance_type}
+                  onChange={(e) => setMarkForm({ ...markForm, maintenance_type: e.target.value })}
+                  className="apple-input text-xs w-full"
+                  placeholder="e.g. Periodic Preventive Service, Engine Oil & Brakes"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                    Servicing Cost (₹)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    value={markForm.cost}
+                    onChange={(e) => setMarkForm({ ...markForm, cost: e.target.value })}
+                    className="apple-input text-xs w-full"
+                    placeholder="15000"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                    Facility / Performed By
+                  </label>
+                  <input
+                    type="text"
+                    value={markForm.performed_by}
+                    onChange={(e) => setMarkForm({ ...markForm, performed_by: e.target.value })}
+                    className="apple-input text-xs w-full"
+                    placeholder="Central Fleet Workshop"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Work Order Notes & Parts Replaced
+                </label>
+                <textarea
+                  rows={2}
+                  value={markForm.notes}
+                  onChange={(e) => setMarkForm({ ...markForm, notes: e.target.value })}
+                  className="apple-input text-xs w-full resize-none"
+                  placeholder="e.g. Replaced oil filter, engine oil, front brake pads inspected and cleared"
+                />
+              </div>
+
+              {actionError && (
+                <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-red-600 dark:text-red-400">
+                  {actionError}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 pt-3 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowMarkModal(false)}
+                className="apple-btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmMarkMaintained}
+                disabled={submittingAction}
+                className="apple-btn-primary text-xs"
+              >
+                {submittingAction ? "Updating..." : "Confirm & Restore to Available"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Maintenance Logs Modal */}
+      {showLogsModal && selectedTruckForLogs && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl apple-card p-6 shadow-2xl overflow-y-auto max-h-[85vh]">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2">
+                <FileText size={18} className="text-[#0071e3] dark:text-[#2997ff]" />
+                <div>
+                  <h3 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Maintenance & Service History
+                  </h3>
+                  <p className="text-xs text-[#86868b]">
+                    {selectedTruckForLogs.registration_number} (Vehicle #{selectedTruckForLogs.id} · {selectedTruckForLogs.model})
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowLogsModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              {loadingLogs ? (
+                <p className="p-6 text-center text-xs text-[#86868b]">Loading maintenance records...</p>
+              ) : truckLogs.length === 0 ? (
+                <div className="p-8 text-center text-xs text-[#86868b]">
+                  <Wrench size={24} className="mx-auto mb-2 opacity-40" />
+                  No maintenance records logged yet for this vehicle.
+                </div>
+              ) : (
+                <div className="rounded-xl border border-black/[0.06] dark:border-white/[0.08] overflow-hidden">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-black/[0.02] dark:bg-white/[0.02] border-b border-black/[0.06] dark:border-white/[0.08] text-[10px] uppercase text-[#86868b]">
+                      <tr>
+                        <th className="px-3.5 py-2.5">Date</th>
+                        <th className="px-3.5 py-2.5">Action</th>
+                        <th className="px-3.5 py-2.5">Type & Notes</th>
+                        <th className="px-3.5 py-2.5">Cost</th>
+                        <th className="px-3.5 py-2.5">Trips at Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                      {truckLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-black/[0.015] dark:hover:bg-white/[0.02]">
+                          <td className="px-3.5 py-2.5 font-mono text-[11px] text-[#86868b]">
+                            {log.date ? new Date(log.date).toLocaleDateString() : "—"}
+                          </td>
+                          <td className="px-3.5 py-2.5 font-semibold capitalize">
+                            <span className={`inline-block px-2 py-0.5 rounded text-[10px] ${
+                              log.action === "marked_maintained"
+                                ? "bg-[#34c759]/10 text-[#34c759]"
+                                : "bg-amber-500/10 text-amber-600"
+                            }`}>
+                              {log.action?.replace("_", " ") || "Servicing"}
+                            </span>
+                          </td>
+                          <td className="px-3.5 py-2.5">
+                            <p className="font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                              {log.maintenance_type || "Routine Service"}
+                            </p>
+                            {log.notes && (
+                              <p className="text-[11px] text-[#86868b] mt-0.5">{log.notes}</p>
+                            )}
+                          </td>
+                          <td className="px-3.5 py-2.5 font-mono text-[#1d1d1f] dark:text-[#f5f5f7]">
+                            {log.cost ? `₹${Number(log.cost).toLocaleString()}` : "—"}
+                          </td>
+                          <td className="px-3.5 py-2.5 text-[#86868b]">
+                            {log.trips_at_time ?? "—"} trips · {log.km_at_time ? Math.round(log.km_at_time).toLocaleString() : 0} km
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end pt-3 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowLogsModal(false)}
+                className="apple-btn-primary text-xs"
+              >
+                Close Logs
               </button>
             </div>
           </div>

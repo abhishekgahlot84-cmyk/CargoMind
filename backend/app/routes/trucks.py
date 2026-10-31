@@ -19,6 +19,7 @@ class TruckCreate(BaseModel):
     capacity: int
     fuel_type: str
     fuel_efficiency: Optional[int] = None
+    mileage_kmpl: Optional[float] = None
     model: Optional[str] = None
     year: Optional[int] = None
     notes: Optional[str] = None
@@ -32,6 +33,7 @@ class TruckUpdate(BaseModel):
     capacity: Optional[int] = None
     fuel_type: Optional[str] = None
     fuel_efficiency: Optional[int] = None
+    mileage_kmpl: Optional[float] = None
     model: Optional[str] = None
     year: Optional[int] = None
     notes: Optional[str] = None
@@ -73,6 +75,7 @@ def create_truck(
     capacity: int,
     fuel_type: str,
     fuel_efficiency: int = None,
+    mileage_kmpl: float = None,
     model: str = None,
     year: int = None,
     notes: str = None,
@@ -98,11 +101,16 @@ def create_truck(
 
     valid_max_speed, valid_avg_speed = validate_truck_speeds(max_speed_kmph, avg_speed_kmph)
 
+    eff_mileage = float(mileage_kmpl) if mileage_kmpl else (float(fuel_efficiency) if fuel_efficiency else 10.0)
+
     truck = Truck(
         registration_number=registration_number,
         capacity=capacity,
         fuel_type=fuel_type,
-        fuel_efficiency=fuel_efficiency,
+        fuel_efficiency=fuel_efficiency or int(eff_mileage),
+        mileage_kmpl=eff_mileage,
+        trips_since_service=0,
+        km_since_service=0.0,
         model=model,
         year=year,
         notes=notes,
@@ -327,6 +335,10 @@ def _truck_dict(truck):
         "capacity": truck.capacity,
         "fuel_type": truck.fuel_type,
         "fuel_efficiency": truck.fuel_efficiency,
+        "mileage_kmpl": float(getattr(truck, "mileage_kmpl", 5.0) or getattr(truck, "fuel_efficiency", 5.0) or 5.0),
+        "trips_since_service": int(getattr(truck, "trips_since_service", 0) or 0),
+        "km_since_service": float(getattr(truck, "km_since_service", 0.0) or 0.0),
+        "last_service_date": getattr(truck, "last_service_date", None),
         "model": truck.model,
         "year": truck.year,
         "notes": truck.notes,
