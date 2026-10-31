@@ -103,11 +103,13 @@ def test_trip_creation_and_listing_persistence():
         assert func_match[0]["driver_name"] == "Test Pilot Driver"
         assert func_match[0]["pickup_location"] == "Test Origin Hub"
 
-        # 5. Verify via live HTTP GET /trips/ endpoint
-        req = urllib.request.Request("http://127.0.0.1:8000/trips/")
-        with urllib.request.urlopen(req) as resp:
-            assert resp.status == 200, f"GET /trips/ returned status {resp.status}"
-            api_data = json.loads(resp.read().decode())
+        # 5. Verify via HTTP GET /trips/ endpoint using TestClient
+        from fastapi.testclient import TestClient
+        from app.main import app
+        client = TestClient(app)
+        resp = client.get("/trips/")
+        assert resp.status_code == 200, f"GET /trips/ returned status {resp.status_code}"
+        api_data = resp.json()
 
         http_match = [t for t in api_data if t.get("id") == trip_id]
         assert len(http_match) == 1, f"Trip {trip_id} missing from HTTP GET /trips/ endpoint response"

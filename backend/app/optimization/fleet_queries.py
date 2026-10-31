@@ -42,36 +42,32 @@ def sync_fleet_resource_statuses(db: Session, company_id: Optional[int] = None) 
     drivers_fixed = 0
 
     for truck in trucks:
-        status = getattr(truck, "status", "")
-        t_id = getattr(truck, "id", None)
-        if status == "maintenance":
+        if truck.status == "maintenance":
             continue
-        if t_id in in_progress_trucks:
-            if status != "in_trip":
+        if truck.id in in_progress_trucks:
+            if truck.status != "in_trip":
                 truck.status = "in_trip"
                 trucks_fixed += 1
-        elif t_id in planned_trucks:
-            if status != "assigned":
+        elif truck.id in planned_trucks:
+            if truck.status != "assigned":
                 truck.status = "assigned"
                 trucks_fixed += 1
         else:
-            if status in ("assigned", "in_trip"):
+            if truck.status in ("assigned", "in_trip"):
                 truck.status = "available"
                 trucks_fixed += 1
 
     for driver in drivers:
-        status = getattr(driver, "status", "")
-        d_id = getattr(driver, "id", None)
-        if d_id in in_progress_drivers:
-            if status != "busy":
+        if driver.id in in_progress_drivers:
+            if driver.status != "busy":
                 driver.status = "busy"
                 drivers_fixed += 1
-        elif d_id in planned_drivers:
-            if status != "assigned":
+        elif driver.id in planned_drivers:
+            if driver.status != "assigned":
                 driver.status = "assigned"
                 drivers_fixed += 1
         else:
-            if status in ("assigned", "busy"):
+            if driver.status in ("assigned", "busy"):
                 driver.status = "available"
                 drivers_fixed += 1
 
@@ -112,7 +108,7 @@ def get_available_trucks(
 
     # 2. Company Filter
     if company_id is not None:
-        company_trucks = [t for t in all_trucks_in_db if getattr(t, "company_id", None) == company_id]
+        company_trucks = [t for t in all_trucks_in_db if t.company_id == company_id]
     else:
         company_trucks = all_trucks_in_db
     diag["company_id_filter"] = company_id
@@ -122,7 +118,7 @@ def get_available_trucks(
     valid_cap_trucks = []
     for t in company_trucks:
         try:
-            cap = float(getattr(t, "capacity", 0) or 0)
+            cap = float(t.capacity or 0)
             if cap > 0:
                 valid_cap_trucks.append(t)
         except (ValueError, TypeError):
@@ -130,7 +126,7 @@ def get_available_trucks(
     diag["valid_capacity_count"] = len(valid_cap_trucks)
 
     # 4. Maintenance Filter
-    non_maintenance_trucks = [t for t in valid_cap_trucks if str(getattr(t, "status", "")).lower() != "maintenance"]
+    non_maintenance_trucks = [t for t in valid_cap_trucks if str(t.status).lower() != "maintenance"]
     diag["maintenance_excluded_count"] = len(valid_cap_trucks) - len(non_maintenance_trucks)
 
     # 5. Active Trips Exclusion (planned / in_progress)
@@ -145,7 +141,7 @@ def get_available_trucks(
 
     available_trucks = [
         t for t in non_maintenance_trucks
-        if getattr(t, "id", None) not in active_trip_truck_ids
+        if t.id not in active_trip_truck_ids
     ]
     diag["available_trucks_count"] = len(available_trucks)
     diag["available_truck_ids"] = [t.id for t in available_trucks]
@@ -157,20 +153,25 @@ def get_available_drivers(
     db: Session,
     company_id: Optional[int] = None,
     diagnostic: Optional[Dict[str, Any]] = None,
+    enforce_wellness: bool = True,
 ) -> List[Driver]:
     """
     ONE shared function returning truly available drivers for dispatch / optimization.
     A driver is available iff:
     1. Belongs to the company
     2. Not assigned to an active trip (planned or in_progress)
+    3. Wellness score >= 60 and rest hours >= 8h (if enforce_wellness is True)
+    Ranked descending by Driver Wellness Score (0-100).
     """
+    from app.optimization.wellness import compute_driver_wellness
+
     diag = diagnostic if diagnostic is not None else {}
 
     all_drivers = db.query(Driver).all()
     diag["total_drivers_in_db"] = len(all_drivers)
 
     if company_id is not None:
-        company_drivers = [d for d in all_drivers if getattr(d, "company_id", None) == company_id]
+        company_drivers = [d for d in all_drivers if d.company_id == company_id]
     else:
         company_drivers = all_drivers
     diag["company_drivers_count"] = len(company_drivers)
@@ -184,10 +185,34 @@ def get_available_drivers(
     }
     diag["active_trip_driver_ids"] = list(active_driver_ids)
 
-    available_drivers = [
+    unassigned_drivers = [
         d for d in company_drivers
-        if getattr(d, "id", None) not in active_driver_ids
+        if d.id not in active_driver_ids
     ]
+    diag["unassigned_drivers_count"] = len(unassigned_drivers)
+
+    # Compute wellness for each candidate
+    evaluated_drivers = []
+    blocked_count = 0
+
+    for d in unassigned_drivers:
+        wellness = compute_driver_wellness(d, db=db)
+        # Update cached score on driver model if changed
+        if d.wellness_score != wellness["score"]:
+            d.wellness_score = wellness["score"]
+        
+        if enforce_wellness and not wellness["is_assignable"]:
+            blocked_count += 1
+            continue
+
+        evaluated_drivers.append((d, wellness["score"]))
+
+    diag["drivers_blocked_low_wellness"] = blocked_count
+
+    # Rank highest wellness score first
+    evaluated_drivers.sort(key=lambda item: item[1], reverse=True)
+    available_drivers = [item[0] for item in evaluated_drivers]
+
     diag["available_drivers_count"] = len(available_drivers)
     diag["available_driver_ids"] = [d.id for d in available_drivers]
 
@@ -236,8 +261,8 @@ def get_pending_consignments(
     urgency_rank = {"critical": 0, "urgent": 1, "normal": 2, "scheduled": 3}
 
     def order_sort_key(o):
-        urgency = getattr(o, "urgency", None) or "normal"
-        priority = -(getattr(o, "priority", None) or 0)
+        urgency = o.urgency or "normal"
+        priority = -(o.priority or 0)
         return (urgency_rank.get(urgency, 2), priority)
 
     return sorted(eligible_orders, key=order_sort_key)

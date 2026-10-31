@@ -14,6 +14,12 @@ import {
   Key,
   AlertCircle,
   Lock,
+  ShieldCheck,
+  Wrench,
+  Clock,
+  Activity,
+  Sparkles,
+  Sliders,
 } from "lucide-react";
 import api from "../services/api";
 import { useTheme } from "../context/ThemeContext";
@@ -44,24 +50,44 @@ export default function Settings() {
   });
   const [savingPassword, setSavingPassword] = useState(false);
 
-  // Fleet Preferences
+  // Fleet Preferences & Dispatch Rules
   const [preferences, setPreferences] = useState(() => {
-    const saved = localStorage.getItem("cargomind_fleet_prefs");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // fallback
-      }
-    }
-    return {
+    const defaults = {
       defaultFuelPrice: 90,
       averageSpeedKmh: 50,
       depotLat: 26.2183,
       depotLon: 78.1828,
       depotName: "Central Logistics Depot (Gwalior)",
       planningHorizonDays: 7,
+      // Dispatch & Shift Rules
+      maxShiftHours: 8.0,
+      breakIntervalHours: 4.5,
+      breakDurationMins: 30,
+      nightWindowStart: "22:00",
+      nightWindowEnd: "03:00",
+      nightMultiplier: 1.25,
+      minRestHours: 8.0,
+      minWellnessScore: 60,
+      // Maintenance Rules
+      maintenanceWarnTrips: 20,
+      maintenanceDueTrips: 30,
+      maintenanceKmThreshold: 10000,
+      // Route Optimization Weights
+      fuelWeight: 1.0,
+      tollWeight: 1.0,
+      driverTimeHourlyRate: 250,
+      delayRiskWeight: 500,
     };
+
+    const saved = localStorage.getItem("cargomind_fleet_prefs");
+    if (saved) {
+      try {
+        return { ...defaults, ...JSON.parse(saved) };
+      } catch {
+        // fallback
+      }
+    }
+    return defaults;
   });
 
   const googleMapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
@@ -224,6 +250,7 @@ export default function Settings() {
           { id: "appearance", label: "Appearance", icon: Sun },
           { id: "profile", label: "Profile & Account", icon: User },
           { id: "security", label: "Authentication & Password", icon: Lock },
+          { id: "dispatch_rules", label: "Dispatch, Wellness & Maintenance", icon: ShieldCheck },
           { id: "general", label: "Solver Parameters", icon: Fuel },
           { id: "system", label: "System & API Status", icon: Server },
         ].map(({ id, label, icon: Icon }) => (
@@ -453,6 +480,282 @@ export default function Settings() {
             </div>
           </form>
         </div>
+      )}
+
+      {/* Tab: Dispatch, Wellness & Maintenance Rules */}
+      {activeTab === "dispatch_rules" && (
+        <form onSubmit={handleSavePreferences} className="max-w-3xl space-y-6">
+          {/* Card 1: Driver Shift & Fatigue Limits */}
+          <div className="apple-card p-7 space-y-5">
+            <div>
+              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
+                <Clock size={17} className="text-[#0071e3] dark:text-[#2997ff]" />
+                Driver Shift Limits & Duty Fatigue Rules
+              </h2>
+              <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                Government and fleet safety compliance: Maximum driving hours, mandatory roadside rest intervals, and night fatigue modifiers.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Max Continuous Shift (Hours)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="4"
+                  max="14"
+                  value={preferences.maxShiftHours}
+                  onChange={(e) => setPreferences({ ...preferences, maxShiftHours: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Standard limit: 8.0 hours.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Break Interval (Hours)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="2"
+                  max="6"
+                  value={preferences.breakIntervalHours}
+                  onChange={(e) => setPreferences({ ...preferences, breakIntervalHours: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Mandatory stop every 4.5h.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Break Duration (Minutes)
+                </label>
+                <input
+                  type="number"
+                  min="15"
+                  max="120"
+                  step="5"
+                  value={preferences.breakDurationMins}
+                  onChange={(e) => setPreferences({ ...preferences, breakDurationMins: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Minimum stop: 30 minutes.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 pt-2 border-t border-black/[0.04] dark:border-white/[0.06]">
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Night Window (Start - End)
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={preferences.nightWindowStart}
+                    onChange={(e) => setPreferences({ ...preferences, nightWindowStart: e.target.value })}
+                    className="apple-input text-xs text-center"
+                    placeholder="22:00"
+                    required
+                  />
+                  <span className="text-[#86868b] text-xs">to</span>
+                  <input
+                    type="text"
+                    value={preferences.nightWindowEnd}
+                    onChange={(e) => setPreferences({ ...preferences, nightWindowEnd: e.target.value })}
+                    className="apple-input text-xs text-center"
+                    placeholder="03:00"
+                    required
+                  />
+                </div>
+                <p className="mt-1 text-[10px] text-[#86868b]">High fatigue window (22:00 - 03:00).</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Night Fatigue Multiplier
+                </label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="1.0"
+                  max="2.5"
+                  value={preferences.nightMultiplier}
+                  onChange={(e) => setPreferences({ ...preferences, nightMultiplier: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">e.g. 1.25x = 1h night counts as 1.25h.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Mandatory Rest (Hours)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="6"
+                  max="16"
+                  value={preferences.minRestHours}
+                  onChange={(e) => setPreferences({ ...preferences, minRestHours: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Rest needed before next trip: 8.0h.</p>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-black/[0.04] dark:border-white/[0.06]">
+              <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                Minimum Wellness Score for Dispatch Allocation
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="40"
+                  max="90"
+                  value={preferences.minWellnessScore}
+                  onChange={(e) => setPreferences({ ...preferences, minWellnessScore: Number(e.target.value) })}
+                  className="apple-input text-xs max-w-xs"
+                  required
+                />
+                <span className="text-xs text-[#86868b]">
+                  Drivers below this score are automatically blocked from vehicle dispatch.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: Fleet Maintenance Triggers */}
+          <div className="apple-card p-7 space-y-5">
+            <div>
+              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
+                <Wrench size={17} className="text-amber-500" />
+                Fleet Maintenance & Grounding Thresholds
+              </h2>
+              <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                Triggers recommendation badges and grounding notices when vehicles exceed operational lifecycle limits.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Service Warning (Trips)
+                </label>
+                <input
+                  type="number"
+                  min="5"
+                  max="50"
+                  value={preferences.maintenanceWarnTrips}
+                  onChange={(e) => setPreferences({ ...preferences, maintenanceWarnTrips: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Triggers recommended service: 20 trips.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Service Due (Trips)
+                </label>
+                <input
+                  type="number"
+                  min="10"
+                  max="100"
+                  value={preferences.maintenanceDueTrips}
+                  onChange={(e) => setPreferences({ ...preferences, maintenanceDueTrips: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Triggers critical due notice: 30 trips.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Odometer Limit (Km)
+                </label>
+                <input
+                  type="number"
+                  min="1000"
+                  max="50000"
+                  step="500"
+                  value={preferences.maintenanceKmThreshold}
+                  onChange={(e) => setPreferences({ ...preferences, maintenanceKmThreshold: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Secondary check: 10,000 km.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 3: AI Route Optimization & Cost Weights */}
+          <div className="apple-card p-7 space-y-5">
+            <div>
+              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
+                <Sliders size={17} className="text-[#34c759] dark:text-[#30d158]" />
+                Route Optimization Weights (AI Recommended Route)
+              </h2>
+              <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                Weighted cost function: <code>Fuel Cost + Toll + (Driver Hours × Hourly Rate) + Delay Risk Penalty</code>
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Driver Time Value (₹ / Hour)
+                </label>
+                <input
+                  type="number"
+                  min="50"
+                  max="2000"
+                  step="25"
+                  value={preferences.driverTimeHourlyRate}
+                  onChange={(e) => setPreferences({ ...preferences, driverTimeHourlyRate: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Driver hourly wage & operational transit value.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
+                  Delay Risk Penalty Weight
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="5000"
+                  step="50"
+                  value={preferences.delayRiskWeight}
+                  onChange={(e) => setPreferences({ ...preferences, delayRiskWeight: Number(e.target.value) })}
+                  className="apple-input text-xs"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-[#86868b]">Penalizes high night exposure & continuous stretches.</p>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <button
+              type="submit"
+              className="apple-btn-primary text-xs"
+            >
+              <Save size={14} />
+              Save Rules & Preferences
+            </button>
+          </div>
+        </form>
       )}
 
       {/* Tab: Solver Defaults */}

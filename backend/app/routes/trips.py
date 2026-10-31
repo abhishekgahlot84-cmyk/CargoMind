@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -269,9 +269,6 @@ def get_all_trips(
     current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    from app.optimization.trip_cleanup import cleanup_completed_trips
-    cleanup_completed_trips(db)
-
     query = (
         db.query(Trip)
         .outerjoin(Truck, Trip.truck_id == Truck.id)
@@ -413,9 +410,6 @@ def auto_allocate_trip(
     order_id: int,
     db: Session = Depends(get_db)
 ):
-    from app.optimization.trip_cleanup import cleanup_completed_trips
-    cleanup_completed_trips(db)
-
     active_statuses = ["planned", "in_progress"]
 
     # 1. Verify order exists
@@ -747,11 +741,6 @@ def update_trip_status(
 
     # Update trip status
     trip.status = status
-    now_utc_str = datetime.now(timezone.utc).isoformat()
-    if status == "completed":
-        trip.completed_at = now_utc_str
-    elif status == "in_progress":
-        trip.start_time = now_utc_str
 
     # Find other trips reserving this truck
     active_statuses = ["planned", "in_progress"]
@@ -775,7 +764,9 @@ def update_trip_status(
     ).first()
 
     if truck:
-        truck.status = "assigned" if (status in active_statuses or other_truck_trip) else "available"
+        truck.status = (
+            "assigned" if other_truck_trip else "available"
+        )
 
     # Update driver availability
     driver = db.query(Driver).filter(
@@ -783,7 +774,9 @@ def update_trip_status(
     ).first()
 
     if driver:
-        driver.status = "busy" if (status in active_statuses or other_driver_trip) else "available"
+        driver.status = (
+            "busy" if other_driver_trip else "available"
+        )
 
     # Synchronize order status
     order = db.query(Order).filter(
@@ -795,6 +788,10 @@ def update_trip_status(
             order.status = "in_progress"
         elif status == "completed":
             order.status = "completed"
+            # Increment truck service counters upon trip completion
+            if trip.truck:
+                trip.truck.trips_since_service = (trip.truck.trips_since_service or 0) + 1
+                trip.truck.km_since_service = (trip.truck.km_since_service or 0.0) + float(trip.distance or 0.0)
         elif status == "cancelled":
             order.status = "pending"
 
@@ -804,20 +801,6 @@ def update_trip_status(
     except Exception:
         db.rollback()
         raise
-
-    from app.optimization.trip_cleanup import cleanup_completed_trips
-    cleanup_completed_trips(db)
-
-    return {
-        "message": "Trip status updated successfully",
-        "trip_id": trip.id,
-        "truck_id": trip.truck_id,
-        "driver_id": trip.driver_id,
-        "trip_status": trip.status,
-        "truck_status": truck.status if truck else None,
-        "driver_status": driver.status if driver else None,
-        "order_status": order.status if order else None
-    }
 
 
 @router.delete("/{trip_id}")
@@ -873,6 +856,17 @@ def delete_trip(
     return {
         "message": f"Trip #{trip_id} deleted successfully",
         "order_id": order_id
+    }
+
+    return {
+        "message": "Trip status updated successfully",
+        "trip_id": trip.id,
+        "truck_id": trip.truck_id,
+        "driver_id": trip.driver_id,
+        "trip_status": trip.status,
+        "truck_status": truck.status if truck else None,
+        "driver_status": driver.status if driver else None,
+        "order_status": order.status if order else None
     }
 
 
