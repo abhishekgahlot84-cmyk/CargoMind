@@ -150,9 +150,6 @@ def get_fleet_simulated_locations(
     Return real-time simulated positions, driver info, and trip progress
     for all vehicles across the fleet.
     """
-    from app.optimization.trip_cleanup import cleanup_completed_trips
-    cleanup_completed_trips(db)
-
     from app.optimization.gps_simulator import compute_simulated_truck_position
     from app.database.models import Truck
 
@@ -260,21 +257,11 @@ def get_truck_active_trip(
         db.query(Trip)
         .filter(
             Trip.truck_id == truck_id,
-            Trip.status == "in_progress"
+            Trip.status.in_(["planned", "in_progress"])
         )
         .order_by(Trip.id.desc())
         .first()
     )
-    if not trip:
-        trip = (
-            db.query(Trip)
-            .filter(
-                Trip.truck_id == truck_id,
-                Trip.status == "planned"
-            )
-            .order_by(Trip.id.desc())
-            .first()
-        )
 
     if not trip:
         raise HTTPException(
@@ -462,21 +449,11 @@ def check_route_deviation(
         db.query(Trip)
         .filter(
             Trip.truck_id == truck_id,
-            Trip.status == "in_progress"
+            Trip.status.in_(["planned", "in_progress"])
         )
         .order_by(Trip.id.desc())
         .first()
     )
-    if not trip:
-        trip = (
-            db.query(Trip)
-            .filter(
-                Trip.truck_id == truck_id,
-                Trip.status == "planned"
-            )
-            .order_by(Trip.id.desc())
-            .first()
-        )
 
     if not trip:
         raise HTTPException(

@@ -16,7 +16,6 @@ from app.optimization.speed_model import (
     haversine_distance_km,
     interpolate_position_along_polyline,
 )
-from app.optimization.trip_cleanup import cleanup_completed_trips
 
 
 def compute_simulated_truck_position(
@@ -31,9 +30,6 @@ def compute_simulated_truck_position(
     Handles: not-started, in-transit, on-break, completed, and idle states.
     Clearly marked as simulated telemetry.
     """
-    # 0. Automatically purge any completed trips older than ~1 hour
-    cleanup_completed_trips(db)
-
     truck = db.query(Truck).filter(Truck.id == truck_id).first()
     if not truck:
         return {"status": "truck_not_found", "truck_id": truck_id}
@@ -41,51 +37,75 @@ def compute_simulated_truck_position(
     truck_max_speed = float(getattr(truck, "max_speed_kmph", 80.0) or 80.0)
     truck_avg_speed = float(getattr(truck, "avg_speed_kmph", 45.0) or 45.0)
 
-    # Prioritize active in-progress trip, then newly allotted planned trip, then recent completed trip (< 1 hr)
+    # Find active trip for this truck
     trip = (
         db.query(Trip)
         .filter(
             Trip.truck_id == truck_id,
-            Trip.status.in_(["in_progress", "in_trip"])
+            Trip.status.in_(["planned", "in_progress", "in_trip", "completed"])
         )
         .order_by(Trip.id.desc())
         .first()
     )
 
-    if not trip:
-        trip = (
-            db.query(Trip)
-            .filter(
-                Trip.truck_id == truck_id,
-                Trip.status == "planned"
-            )
-            .order_by(Trip.id.desc())
-            .first()
-        )
+    now = datetime.now(timezone.utc)
 
-    if not trip:
-        trip = (
-            db.query(Trip)
-            .filter(
-                Trip.truck_id == truck_id,
-                Trip.status == "completed"
-            )
-            .order_by(Trip.id.desc())
-            .first()
-        )
+    # Check for handovers on this trip and switch to relay driver if handover time has arrived
+    active_driver_id = trip.driver_id if trip else None
+    handover_info = None
 
-    driver = db.query(Driver).filter(Driver.id == trip.driver_id).first() if (trip and trip.driver_id) else None
+    if trip:
+        from app.database.models import DriverHandover
+        handovers = db.query(DriverHandover).filter(
+            DriverHandover.trip_id == trip.id
+        ).order_by(DriverHandover.id.asc()).all()
+
+        for ho in handovers:
+            is_past_handover = False
+            if ho.actual_handover_time or ho.status == "executed":
+                is_past_handover = True
+            elif ho.planned_handover_time:
+                try:
+                    ho_dt = datetime.fromisoformat(ho.planned_handover_time.replace("Z", "+00:00"))
+                    if ho_dt.tzinfo is None:
+                        ho_dt = ho_dt.replace(tzinfo=timezone.utc)
+                    if now >= ho_dt:
+                        is_past_handover = True
+                        if ho.status == "planned":
+                            ho.status = "executed"
+                            ho.actual_handover_time = ho.planned_handover_time
+                            trip.driver_id = ho.incoming_driver_id
+                            try:
+                                db.commit()
+                            except Exception:
+                                db.rollback()
+                except Exception:
+                    pass
+
+            if is_past_handover and ho.incoming_driver_id:
+                active_driver_id = ho.incoming_driver_id
+                handover_info = {
+                    "handover_id": ho.id,
+                    "hub_name": ho.hub.name if ho.hub else "Corridor Hub",
+                    "switched_at": ho.actual_handover_time or ho.planned_handover_time,
+                    "relay_driver_id": ho.incoming_driver_id,
+                }
+
+    driver = db.query(Driver).filter(Driver.id == active_driver_id).first() if active_driver_id else None
     if not driver:
         driver = db.query(Driver).filter(Driver.status == "available").first()
 
+    driver_wellness_score = getattr(driver, "wellness_score", 85) or 85
     driver_data = {
         "id": driver.id if driver else None,
         "name": driver.name if driver else "Assigned Fleet Driver",
         "phone": (driver.phone if driver and driver.phone else "+91 98765 43210"),
         "license_number": (driver.license_number if driver and driver.license_number else "DL-COMMERCIAL-01"),
+        "wellness_score": driver_wellness_score,
+        "wellness_band": "good" if driver_wellness_score >= 80 else ("fair" if driver_wellness_score >= 60 else "needs_rest"),
+        "is_relay_driver": handover_info is not None,
+        "handover_info": handover_info,
     }
-
-    now = datetime.now(timezone.utc)
 
     # If no active trip, vehicle is parked at central depot
     if not trip:
@@ -144,6 +164,7 @@ def compute_simulated_truck_position(
                 db.commit()
         except Exception as exc:
             print(f"Could not compute highway road route for trip {trip.id}: {exc}")
+            # Note: Do not fall back to straight line.
             coordinates = []
 
     total_dist = float(trip.distance or 0)
@@ -159,89 +180,6 @@ def compute_simulated_truck_position(
         trip.distance = int(total_dist)
         db.commit()
 
-    # Case A: Newly allotted trip waiting to depart (status == 'planned')
-    # Shows immediately on map at pickup location with 0% progress and full route polyline
-    if trip.status == "planned":
-        curr_pos = {"lat": p_lat, "lng": p_lon}
-        if coordinates:
-            curr_pos = {"lat": float(coordinates[0][1]), "lng": float(coordinates[0][0])}
-
-        return {
-            "status": "success",
-            "state": "not_started",
-            "is_simulated": True,
-            "simulated": True,
-            "truck_id": truck.id,
-            "truck_registration": truck.registration_number,
-            "driver": driver_data,
-            "trip_id": trip.id,
-            "trip_status": "planned",
-            "origin": order.pickup_location if order else "Origin Hub",
-            "destination": order.delivery_location if order else "Destination Terminal",
-            "pickup_coordinates": {"lat": p_lat, "lng": p_lon},
-            "delivery_coordinates": {"lat": d_lat, "lng": d_lon},
-            "current_position": curr_pos,
-            "route_polyline": coordinates,
-            "start_time": trip.start_time,
-            "server_time": now.isoformat(),
-            "speed_kmph": 0.0,
-            "current_speed": 0.0,
-            "average_speed_kmph": truck_avg_speed,
-            "avg_speed_kmph": truck_avg_speed,
-            "max_speed_kmph": truck_max_speed,
-            "base_speed_kmph": truck_avg_speed,
-            "distance_travelled_km": 0.0,
-            "distance_remaining_km": total_dist,
-            "total_distance_km": total_dist,
-            "progress_percentage": 0.0,
-            "progress": 0.0,
-            "eta": "Scheduled / Awaiting Departure",
-            "eta_iso": None,
-            "total_breaks_count": 0,
-        }
-
-    # Case B: Completed trip resting at destination during 1-hour grace window
-    if trip.status == "completed":
-        curr_pos = {"lat": d_lat, "lng": d_lon}
-        if coordinates:
-            curr_pos = {"lat": float(coordinates[-1][1]), "lng": float(coordinates[-1][0])}
-
-        return {
-            "status": "success",
-            "state": "completed",
-            "is_simulated": True,
-            "simulated": True,
-            "truck_id": truck.id,
-            "truck_registration": truck.registration_number,
-            "driver": driver_data,
-            "trip_id": trip.id,
-            "trip_status": "completed",
-            "origin": order.pickup_location if order else "Origin Hub",
-            "destination": order.delivery_location if order else "Destination Terminal",
-            "pickup_coordinates": {"lat": p_lat, "lng": p_lon},
-            "delivery_coordinates": {"lat": d_lat, "lng": d_lon},
-            "current_position": curr_pos,
-            "route_polyline": coordinates,
-            "start_time": trip.start_time,
-            "completed_at": trip.completed_at,
-            "server_time": now.isoformat(),
-            "speed_kmph": 0.0,
-            "current_speed": 0.0,
-            "average_speed_kmph": truck_avg_speed,
-            "avg_speed_kmph": truck_avg_speed,
-            "max_speed_kmph": truck_max_speed,
-            "base_speed_kmph": truck_avg_speed,
-            "distance_travelled_km": total_dist,
-            "distance_remaining_km": 0.0,
-            "total_distance_km": total_dist,
-            "progress_percentage": 100.0,
-            "progress": 100.0,
-            "eta": "Trip Completed",
-            "eta_iso": None,
-            "total_breaks_count": 0,
-        }
-
-    # Case C: Active trip in-progress / in-trip
     # Parse start time
     start_dt = None
     if trip.start_time:
@@ -251,7 +189,8 @@ def compute_simulated_truck_position(
             pass
 
     if not start_dt:
-        start_dt = now
+        # Default start time: 1.5 hours ago for demo transit
+        start_dt = now - timedelta(hours=1.5)
         trip.start_time = start_dt.isoformat()
         db.commit()
 
@@ -270,32 +209,6 @@ def compute_simulated_truck_position(
         road_polyline=coordinates,
         trip_speed_override=trip_speed_override,
     )
-
-    # Auto-transition to completed when simulation physically finishes
-    if metrics["state"] == "completed" and trip.status in ["in_progress", "in_trip"]:
-        trip.status = "completed"
-        trip.completed_at = now.isoformat()
-        if order and order.status != "completed":
-            order.status = "completed"
-        other_truck_trip = db.query(Trip).filter(
-            Trip.truck_id == truck.id,
-            Trip.id != trip.id,
-            Trip.status.in_(["planned", "in_progress"])
-        ).first()
-        if not other_truck_trip:
-            truck.status = "available"
-        if driver:
-            other_driver_trip = db.query(Trip).filter(
-                Trip.driver_id == driver.id,
-                Trip.id != trip.id,
-                Trip.status.in_(["planned", "in_progress"])
-            ).first()
-            if not other_driver_trip:
-                driver.status = "available"
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
 
     # Position fallback if coordinates empty or not started
     if metrics["current_position"]:

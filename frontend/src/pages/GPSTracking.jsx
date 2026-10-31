@@ -7,7 +7,6 @@ import {
   Radio,
   MapPin,
   Clock,
-  Gauge,
   Key,
   X,
   User,
@@ -229,7 +228,7 @@ export default function GPSTracking() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleBackToOverview]);
 
-  // Auto-refresh interval (frequent updates: every 2.5 seconds)
+  // Auto-refresh interval (every 6 seconds)
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(() => {
@@ -237,7 +236,7 @@ export default function GPSTracking() {
       if (selectedTruckIdRef.current) {
         fetchSelectedTruckTelemetry(selectedTruckIdRef.current);
       }
-    }, 2500);
+    }, 6000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchFleetTelemetry, fetchSelectedTruckTelemetry]);
 
@@ -1014,7 +1013,7 @@ export default function GPSTracking() {
               onChange={(e) => setAutoRefresh(e.target.checked)}
               className="rounded"
             />
-            Auto-refresh (2.5s)
+            Auto-refresh (6s)
           </label>
 
           <button
