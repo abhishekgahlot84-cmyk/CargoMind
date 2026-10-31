@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
-from app.database.models import Maintenance
+from app.database.models import Maintenance, Truck, User
+from app.routes.auth import get_current_user_optional
 
 
 router = APIRouter(
@@ -19,8 +20,14 @@ def create_maintenance(
     odometer: int = None,
     engine_hours: int = None,
     cost: int = None,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    # Verify truck belongs to user
+    truck = db.query(Truck).filter(Truck.id == truck_id, Truck.company_id == current_user.company_id).first()
+    if not truck:
+        raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
+
     maintenance = Maintenance(
         truck_id=truck_id,
         service_date=service_date,
@@ -51,9 +58,15 @@ def create_maintenance(
 
 @router.get("/")
 def get_maintenance_records(
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    records = db.query(Maintenance).all()
+    records = (
+        db.query(Maintenance)
+        .join(Truck, Maintenance.truck_id == Truck.id)
+        .filter(Truck.company_id == current_user.company_id)
+        .all()
+    )
 
     return records
 

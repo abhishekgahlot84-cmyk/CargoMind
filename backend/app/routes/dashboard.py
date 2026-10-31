@@ -7,8 +7,10 @@ from app.database.models import (
     Driver,
     Order,
     Trip,
-    GPSTracking
+    GPSTracking,
+    User,
 )
+from app.routes.auth import get_current_user_optional
 
 
 router = APIRouter(
@@ -18,69 +20,75 @@ router = APIRouter(
 
 @router.get("/summary")
 def get_dashboard_summary(
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id
+
     total_trucks = (
         db.query(Truck)
+        .filter(Truck.company_id == comp_id)
         .count()
     )
 
     available_trucks = (
         db.query(Truck)
-        .filter(Truck.status == "available")
+        .filter(Truck.company_id == comp_id, Truck.status == "available")
         .count()
     )
 
     assigned_trucks = (
         db.query(Truck)
-        .filter(Truck.status == "assigned")
+        .filter(Truck.company_id == comp_id, Truck.status == "assigned")
         .count()
     )
 
     total_drivers = (
         db.query(Driver)
+        .filter(Driver.company_id == comp_id)
         .count()
     )
 
     available_drivers = (
         db.query(Driver)
-        .filter(Driver.status == "available")
+        .filter(Driver.company_id == comp_id, Driver.status == "available")
         .count()
     )
 
     busy_drivers = (
         db.query(Driver)
-        .filter(Driver.status == "busy")
+        .filter(Driver.company_id == comp_id, Driver.status == "busy")
         .count()
     )
 
     pending_orders = (
         db.query(Order)
-        .filter(Order.status == "pending")
+        .filter(Order.company_id == comp_id, Order.status == "pending")
         .count()
     )
 
     assigned_orders = (
         db.query(Order)
-        .filter(Order.status == "assigned")
+        .filter(Order.company_id == comp_id, Order.status == "assigned")
         .count()
     )
 
     in_progress_orders = (
         db.query(Order)
-        .filter(Order.status == "in_progress")
+        .filter(Order.company_id == comp_id, Order.status == "in_progress")
         .count()
     )
 
     completed_orders = (
         db.query(Order)
-        .filter(Order.status == "completed")
+        .filter(Order.company_id == comp_id, Order.status == "completed")
         .count()
     )
 
     active_trips = (
         db.query(Trip)
-        .filter(Trip.status == "in_progress")
+        .join(Truck, Trip.truck_id == Truck.id)
+        .filter(Truck.company_id == comp_id, Trip.status == "in_progress")
         .count()
     )
 
@@ -100,11 +108,15 @@ def get_dashboard_summary(
 
 @router.get("/active-trips")
 def get_active_trips(
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id
+
     trips = (
         db.query(Trip)
-        .filter(Trip.status == "in_progress")
+        .join(Truck, Trip.truck_id == Truck.id)
+        .filter(Truck.company_id == comp_id, Trip.status == "in_progress")
         .all()
     )
 

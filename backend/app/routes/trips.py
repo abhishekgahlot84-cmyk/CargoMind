@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -11,7 +12,9 @@ from app.database.models import (
     Driver,
     Truck,
     TripDriverAssignment,
+    User,
 )
+from app.routes.auth import get_current_user_optional
 
 router = APIRouter(
     prefix="/trips",
@@ -263,14 +266,52 @@ def update_trip_truck(
 
 @router.get("/")
 def get_all_trips(
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    trips = (
+    from app.optimization.trip_cleanup import cleanup_completed_trips
+    cleanup_completed_trips(db)
+
+    query = (
         db.query(Trip)
-        .all()
+        .outerjoin(Truck, Trip.truck_id == Truck.id)
+        .outerjoin(Driver, Trip.driver_id == Driver.id)
+        .outerjoin(Order, Trip.order_id == Order.id)
     )
 
-    return trips
+    # Admins or default fleet org see all recorded trips (e.g. Trip 11)
+    if current_user and getattr(current_user, "role", "") != "admin" and getattr(current_user, "company_id", 1) not in (None, 1):
+        query = query.filter(
+            (Truck.company_id == current_user.company_id) | (Truck.company_id == None) | (Order.company_id == current_user.company_id)
+        )
+
+    trips = query.order_by(Trip.id.desc()).all()
+
+    result = []
+    for trip in trips:
+        t_dict = {
+            "id": trip.id,
+            "truck_id": trip.truck_id,
+            "driver_id": trip.driver_id,
+            "order_id": trip.order_id,
+            "distance": trip.distance,
+            "distance_km": trip.distance,
+            "estimated_time": trip.estimated_time,
+            "fuel_cost": trip.fuel_cost,
+            "status": trip.status,
+            "start_time": trip.start_time,
+            "average_speed_kmph": trip.average_speed_kmph,
+            "truck_registration": trip.truck.registration_number if trip.truck else f"Truck #{trip.truck_id}",
+            "truck_capacity": trip.truck.capacity if trip.truck else None,
+            "driver_name": trip.driver.name if trip.driver else f"Driver #{trip.driver_id}",
+            "driver_phone": trip.driver.phone if trip.driver else None,
+            "pickup_location": trip.order.pickup_location if trip.order else "Origin Hub",
+            "delivery_location": trip.order.delivery_location if trip.order else "Destination Terminal",
+            "order_weight": trip.order.weight if trip.order else None,
+        }
+        result.append(t_dict)
+
+    return result
 
 @router.get("/truck/{truck_id}")
 def get_trips_by_truck(
@@ -367,9 +408,150 @@ def get_trip(
     return trip
 
 
-# from typing import Optional
-# from datetime import datetime
-# from fastapi import Body
+@router.post("/auto-allocate")
+def auto_allocate_trip(
+    order_id: int,
+    db: Session = Depends(get_db)
+):
+    from app.optimization.trip_cleanup import cleanup_completed_trips
+    cleanup_completed_trips(db)
+
+    active_statuses = ["planned", "in_progress"]
+
+    # 1. Verify order exists
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Order ID {order_id} not found"
+        )
+
+    # 2. Check if order already has an active trip
+    existing_trip = db.query(Trip).filter(Trip.order_id == order_id).first()
+    if existing_trip:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Order {order_id} already allocated to trip #{existing_trip.id} ({existing_trip.status})"
+        )
+
+    # 3. Find busy trucks
+    busy_truck_ids = {
+        row[0] for row in db.query(Trip.truck_id).filter(Trip.status.in_(active_statuses)).distinct().all()
+    }
+
+    # 4. Find available truck with matching company and capacity
+    trucks = db.query(Truck).filter(Truck.status == "available").all()
+    eligible_trucks = [
+        t for t in trucks
+        if t.id not in busy_truck_ids
+        and (t.capacity or 0) >= (order.weight or 0)
+        and (t.company_id == order.company_id or not order.company_id)
+    ]
+    if not eligible_trucks:
+        # Fallback without company filter if company is default
+        eligible_trucks = [
+            t for t in trucks
+            if t.id not in busy_truck_ids
+            and (t.capacity or 0) >= (order.weight or 0)
+        ]
+
+    if not eligible_trucks:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No available truck with capacity >= {order.weight} kg found."
+        )
+
+    # 5. Find busy drivers
+    busy_driver_ids = {
+        row[0] for row in db.query(Trip.driver_id).filter(Trip.status.in_(active_statuses)).distinct().all()
+    }
+
+    # 6. Find available driver
+    drivers = db.query(Driver).filter(Driver.status == "available").all()
+    eligible_drivers = [
+        d for d in drivers
+        if d.id not in busy_driver_ids
+        and (d.company_id == order.company_id or not order.company_id)
+    ]
+    if not eligible_drivers:
+        eligible_drivers = [d for d in drivers if d.id not in busy_driver_ids]
+
+    if not eligible_drivers:
+        raise HTTPException(
+            status_code=409,
+            detail="No available driver found for allocation."
+        )
+
+    selected_truck = eligible_trucks[0]
+    selected_driver = eligible_drivers[0]
+
+    # Calculate distance and estimated time
+    dist_km = float(order.distance_km) if order.distance_km and order.distance_km > 0 else 100.0
+    est_hours = max(1.0, round(dist_km / 50.0, 1))
+    fuel_cost = int(dist_km * 15)  # estimated base fuel
+
+    schedule_res = schedule_multi_day_trip(
+        distance_km=dist_km,
+        estimated_time_hours=est_hours,
+        daily_working_hours=8,
+        rest_hours=9,
+    )
+
+    # Try road route coordinates if coordinates exist
+    planned_route_data = None
+    if order.pickup_latitude and order.pickup_longitude and order.delivery_latitude and order.delivery_longitude:
+        try:
+            from app.optimization.road_route import get_road_route
+            planned_route_data = get_road_route(
+                float(order.pickup_latitude),
+                float(order.pickup_longitude),
+                float(order.delivery_latitude),
+                float(order.delivery_longitude),
+            )
+        except Exception:
+            planned_route_data = None
+
+    new_trip = Trip(
+        truck_id=selected_truck.id,
+        driver_id=selected_driver.id,
+        order_id=order.id,
+        distance=int(dist_km),
+        estimated_time=int(est_hours),
+        fuel_cost=fuel_cost,
+        status="planned",
+        daily_schedule=schedule_res["daily_schedule"],
+        planned_route=planned_route_data,
+    )
+
+    try:
+        db.add(new_trip)
+        # Update order status to assigned
+        order.status = "assigned"
+        # Update truck and driver status to assigned
+        selected_truck.status = "assigned"
+        selected_driver.status = "assigned"
+        db.commit()
+        db.refresh(new_trip)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database allocation failed: {str(e)}")
+
+    return {
+        "message": "Trip allocated successfully",
+        "trip": {
+            "id": new_trip.id,
+            "truck_id": new_trip.truck_id,
+            "driver_id": new_trip.driver_id,
+            "order_id": new_trip.order_id,
+            "status": new_trip.status,
+            "distance": new_trip.distance,
+            "daily_schedule": new_trip.daily_schedule,
+            "truck_registration": selected_truck.registration_number,
+            "driver_name": selected_driver.name,
+        }
+    }
+
+
 @router.post("/")
 def create_trip(
     truck_id: int,
@@ -540,7 +722,8 @@ def update_trip_status(
     allowed_statuses = [
         "planned",
         "in_progress",
-        "completed"
+        "completed",
+        "cancelled"
     ]
 
     if status not in allowed_statuses:
@@ -550,9 +733,10 @@ def update_trip_status(
         )
 
     valid_transitions = {
-        "planned": ["in_progress"],
-        "in_progress": ["completed"],
-        "completed": []
+        "planned": ["in_progress", "cancelled"],
+        "in_progress": ["completed", "cancelled"],
+        "completed": [],
+        "cancelled": []
     }
 
     if status not in valid_transitions.get(trip.status, []):
@@ -563,6 +747,11 @@ def update_trip_status(
 
     # Update trip status
     trip.status = status
+    now_utc_str = datetime.now(timezone.utc).isoformat()
+    if status == "completed":
+        trip.completed_at = now_utc_str
+    elif status == "in_progress":
+        trip.start_time = now_utc_str
 
     # Find other trips reserving this truck
     active_statuses = ["planned", "in_progress"]
@@ -586,9 +775,7 @@ def update_trip_status(
     ).first()
 
     if truck:
-        truck.status = (
-            "assigned" if other_truck_trip else "available"
-        )
+        truck.status = "assigned" if (status in active_statuses or other_truck_trip) else "available"
 
     # Update driver availability
     driver = db.query(Driver).filter(
@@ -596,9 +783,7 @@ def update_trip_status(
     ).first()
 
     if driver:
-        driver.status = (
-            "busy" if other_driver_trip else "available"
-        )
+        driver.status = "busy" if (status in active_statuses or other_driver_trip) else "available"
 
     # Synchronize order status
     order = db.query(Order).filter(
@@ -610,6 +795,8 @@ def update_trip_status(
             order.status = "in_progress"
         elif status == "completed":
             order.status = "completed"
+        elif status == "cancelled":
+            order.status = "pending"
 
     try:
         db.commit()
@@ -617,6 +804,9 @@ def update_trip_status(
     except Exception:
         db.rollback()
         raise
+
+    from app.optimization.trip_cleanup import cleanup_completed_trips
+    cleanup_completed_trips(db)
 
     return {
         "message": "Trip status updated successfully",
@@ -627,6 +817,62 @@ def update_trip_status(
         "truck_status": truck.status if truck else None,
         "driver_status": driver.status if driver else None,
         "order_status": order.status if order else None
+    }
+
+
+@router.delete("/{trip_id}")
+def delete_trip(
+    trip_id: int,
+    db: Session = Depends(get_db)
+):
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(
+            status_code=404,
+            detail="Trip not found"
+        )
+
+    truck_id = trip.truck_id
+    driver_id = trip.driver_id
+    order_id = trip.order_id
+
+    # Reset order status back to pending
+    if order_id:
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if order and order.status in ("assigned", "in_progress"):
+            order.status = "pending"
+
+    db.delete(trip)
+    db.flush()
+
+    active_statuses = ["planned", "in_progress"]
+    other_truck = db.query(Trip).filter(
+        Trip.truck_id == truck_id,
+        Trip.status.in_(active_statuses)
+    ).first()
+    if truck_id:
+        truck = db.query(Truck).filter(Truck.id == truck_id).first()
+        if truck:
+            truck.status = "assigned" if other_truck else "available"
+
+    other_driver = db.query(Trip).filter(
+        Trip.driver_id == driver_id,
+        Trip.status.in_(active_statuses)
+    ).first()
+    if driver_id:
+        driver = db.query(Driver).filter(Driver.id == driver_id).first()
+        if driver:
+            driver.status = "busy" if other_driver else "available"
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "message": f"Trip #{trip_id} deleted successfully",
+        "order_id": order_id
     }
 
 

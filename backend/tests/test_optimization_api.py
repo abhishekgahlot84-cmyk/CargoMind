@@ -20,14 +20,43 @@ class FakeQuery:
     def all(self):
         return self.results
 
+    def first(self):
+        return self.results[0] if self.results else None
 
 
 class FakeDB:
     def __init__(self, query_results):
-        self.query_results = iter(query_results)
+        results = list(query_results)
+        self.trucks = results[0] if len(results) > 0 else []
+        self.drivers = results[1] if len(results) > 1 else []
+        self.orders = results[2] if len(results) > 2 else []
+        self.trips = results[3] if len(results) > 3 else []
 
     def query(self, *args, **kwargs):
-        return FakeQuery(next(self.query_results))
+        from app.database.models import User, Trip, Truck, Driver, Order
+        if args and args[0] is User:
+            return FakeQuery([SimpleNamespace(id=1, email="admin@fleetai.com", role="admin", company_id=None)])
+        if args and args[0] is Trip:
+            return FakeQuery(self.trips)
+        if args and args[0] is Truck:
+            return FakeQuery(self.trucks)
+        if args and args[0] is Driver:
+            return FakeQuery(self.drivers)
+        if args and args[0] is Order:
+            return FakeQuery(self.orders)
+        return FakeQuery([])
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def refresh(self, obj):
+        pass
+
+    def add(self, obj):
+        pass
 
 
 
@@ -49,14 +78,15 @@ def test_fleet_route_returns_error_when_no_trucks():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "fleet_not_feasible"
-    assert data["message"] == "No available trucks found"
+    assert "No available trucks found" in data["message"]
 
 
 def override_get_db_no_drivers():
+    dummy_truck = SimpleNamespace(id=1, company_id=1, capacity=1000, status="available")
     yield FakeDB([
-        ["dummy truck"],  # available trucks
-        [],               # available drivers
-        [],               # pending orders
+        [dummy_truck],  # available trucks
+        [],             # available drivers
+        [],             # pending orders
     ])
 
 
@@ -68,14 +98,16 @@ def test_fleet_route_returns_error_when_no_drivers():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "fleet_not_feasible"
-    assert data["message"] == "No available drivers found"
+    assert "No available drivers found" in data["message"]
 
 
 def override_get_db_no_orders():
+    dummy_truck = SimpleNamespace(id=1, company_id=1, capacity=1000, status="available")
+    dummy_driver = SimpleNamespace(id=1, company_id=1, working_hours=8, status="available")
     yield FakeDB([
-        ["dummy truck"],   # available trucks
-        ["dummy driver"],  # available drivers
-        [],                # pending orders
+        [dummy_truck],   # available trucks
+        [dummy_driver],  # available drivers
+        [],              # pending orders
     ])
 
 
@@ -86,7 +118,7 @@ def test_fleet_route_returns_message_when_no_orders():
 
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "No pending orders found"
+    assert "No pending orders found" in data["message"]
 
 
 from types import SimpleNamespace

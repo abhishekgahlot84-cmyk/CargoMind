@@ -1,44 +1,85 @@
-# Python
+# Python & Bytecode
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 
-# Virtual environment
+# Virtual Environments
 venv/
 .venv/
 env/
 ENV/
+env.bak/
+venv.bak/
 
-# Environment variables
+# Environment Variables & Secrets
 .env
 .env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 !.env.example
 
-# Jupyter
-.ipynb_checkpoints/
-
-# Node / React
-node_modules/
+# Build Artifacts & Distribution
+dist/
+build/
 frontend/dist/
 frontend/build/
+*.egg-info/
+*.egg
 
-# VS Code
-.vscode/
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Local Databases & Backups
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+fleet_local.db
+backend/fleet_local.db
+backend/backups/
+backups/
+
+# Uploads & Temporary Scratch Files
+uploads/
+*/uploads/
+backend/scratch/
+scratch/
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Testing
+# Testing & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
+coverage/
 
-# Machine Learning
+# IDE & Editor Config
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Machine Learning Artifacts
 *.pkl
 *.joblib
 *.model
-
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
+.ipynb_checkpoints/

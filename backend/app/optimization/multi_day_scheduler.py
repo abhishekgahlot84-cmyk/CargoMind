@@ -11,10 +11,12 @@ def schedule_multi_day_trip(
     start_datetime=None,
     rest_hours=DEFAULT_REST_HOURS,
     estimated_time_hours=None,
+    average_speed_kmh=45.0,
 ):
     distance_km = float(distance_km)
     daily_working_hours = float(daily_working_hours)
     rest_hours = float(rest_hours)
+    avg_speed = float(average_speed_kmh or 45.0)
 
     if distance_km < 0:
         raise ValueError("Distance cannot be negative.")
@@ -22,9 +24,11 @@ def schedule_multi_day_trip(
         raise ValueError("Daily working hours must be positive.")
     if rest_hours < 0:
         raise ValueError("Rest hours cannot be negative.")
+    if avg_speed <= 0:
+        avg_speed = 45.0
 
     if estimated_time_hours is None:
-        total_driving_hours = distance_km / AVERAGE_SPEED_KMH
+        total_driving_hours = distance_km / avg_speed
     else:
         total_driving_hours = float(estimated_time_hours)
 

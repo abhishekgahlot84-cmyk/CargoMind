@@ -1,4 +1,3 @@
-import pytest
 from types import SimpleNamespace
 
 from app.optimization.fleet_route_optimizer import optimize_fleet_routes

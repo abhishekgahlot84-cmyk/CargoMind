@@ -142,6 +142,42 @@ def get_gps_records(
     return records
 
 
+@router.get("/simulation/fleet")
+def get_fleet_simulated_locations(
+    db: Session = Depends(get_db)
+):
+    """
+    Return real-time simulated positions, driver info, and trip progress
+    for all vehicles across the fleet.
+    """
+    from app.optimization.trip_cleanup import cleanup_completed_trips
+    cleanup_completed_trips(db)
+
+    from app.optimization.gps_simulator import compute_simulated_truck_position
+    from app.database.models import Truck
+
+    trucks = db.query(Truck).all()
+    fleet_telemetry = []
+    for truck in trucks:
+        sim = compute_simulated_truck_position(truck.id, db)
+        fleet_telemetry.append(sim)
+
+    return fleet_telemetry
+
+
+@router.get("/simulation/{truck_id}")
+def get_simulated_truck_location(
+    truck_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Deterministic time-interpolated live position, driver data, and ETA
+    for a single vehicle.
+    """
+    from app.optimization.gps_simulator import compute_simulated_truck_position
+    return compute_simulated_truck_position(truck_id, db)
+
+
 @router.get("/{truck_id}")
 def get_truck_location(
     truck_id: int,
@@ -155,6 +191,17 @@ def get_truck_location(
     )
 
     if not record:
+        from app.optimization.gps_simulator import compute_simulated_truck_position
+        sim = compute_simulated_truck_position(truck_id, db)
+        if sim.get("current_position"):
+            return {
+                "truck_id": truck_id,
+                "latitude": str(sim["current_position"]["lat"]),
+                "longitude": str(sim["current_position"]["lng"]),
+                "speed": sim.get("speed_kmph", 0),
+                "timestamp": sim.get("server_time", datetime.now(timezone.utc).isoformat()),
+                "is_simulated": True
+            }
         raise HTTPException(
             status_code=404,
             detail="GPS record not found for this truck"
@@ -165,8 +212,37 @@ def get_truck_location(
         "latitude": record.latitude,
         "longitude": record.longitude,
         "speed": record.speed,
-        "timestamp": record.timestamp
+        "timestamp": record.timestamp,
+        "is_simulated": False
     }
+
+@router.get("/{truck_id}/history")
+def get_truck_gps_history(
+    truck_id: int,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Retrieve chronologically ordered historical GPS trail for a truck."""
+    records = (
+        db.query(GPSTracking)
+        .filter(GPSTracking.truck_id == truck_id)
+        .order_by(GPSTracking.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": r.id,
+            "truck_id": r.truck_id,
+            "latitude": float(r.latitude),
+            "longitude": float(r.longitude),
+            "speed": r.speed,
+            "timestamp": r.timestamp,
+        }
+        for r in records
+    ]
+
 
 @router.get("/{truck_id}/active-trip")
 def get_truck_active_trip(
@@ -180,12 +256,6 @@ def get_truck_active_trip(
         .first()
     )
 
-    if not gps_record:
-        raise HTTPException(
-            status_code=404,
-            detail="GPS record not found for this truck"
-        )
-
     trip = (
         db.query(Trip)
         .filter(
@@ -195,6 +265,16 @@ def get_truck_active_trip(
         .order_by(Trip.id.desc())
         .first()
     )
+    if not trip:
+        trip = (
+            db.query(Trip)
+            .filter(
+                Trip.truck_id == truck_id,
+                Trip.status == "planned"
+            )
+            .order_by(Trip.id.desc())
+            .first()
+        )
 
     if not trip:
         raise HTTPException(
@@ -202,16 +282,47 @@ def get_truck_active_trip(
             detail="No active trip found for this truck"
         )
 
+    order = db.query(Order).filter(Order.id == trip.order_id).first() if trip.order_id else None
+
+    # Auto-calculate and cache planned road route if missing and order has coordinates
+    if trip.planned_route is None and order and order.pickup_latitude and order.delivery_latitude:
+        try:
+            from app.optimization.road_route import get_road_route
+            route_data = get_road_route(
+                float(order.pickup_latitude),
+                float(order.pickup_longitude),
+                float(order.delivery_latitude),
+                float(order.delivery_longitude),
+            )
+            trip.planned_route = route_data
+            db.commit()
+            db.refresh(trip)
+        except Exception:
+            pass
+
     return {
         "truck_id": truck_id,
         "trip_id": trip.id,
         "order_id": trip.order_id,
-        "latitude": gps_record.latitude,
-        "longitude": gps_record.longitude,
-        "speed": gps_record.speed,
-        "timestamp": gps_record.timestamp,
-        "trip_status": trip.status
+        "latitude": gps_record.latitude if gps_record else None,
+        "longitude": gps_record.longitude if gps_record else None,
+        "speed": gps_record.speed if gps_record else 0,
+        "timestamp": gps_record.timestamp if gps_record else None,
+        "trip_status": trip.status,
+        "distance_km": trip.distance,
+        "estimated_time": trip.estimated_time,
+        "planned_route": trip.planned_route,
+        "order": {
+            "pickup_location": order.pickup_location if order else None,
+            "delivery_location": order.delivery_location if order else None,
+            "weight": order.weight if order else None,
+            "pickup_latitude": order.pickup_latitude if order else None,
+            "pickup_longitude": order.pickup_longitude if order else None,
+            "delivery_latitude": order.delivery_latitude if order else None,
+            "delivery_longitude": order.delivery_longitude if order else None,
+        } if order else None,
     }
+
 
 @router.get("/{truck_id}/eta")
 def get_truck_eta(
@@ -356,6 +467,16 @@ def check_route_deviation(
         .order_by(Trip.id.desc())
         .first()
     )
+    if not trip:
+        trip = (
+            db.query(Trip)
+            .filter(
+                Trip.truck_id == truck_id,
+                Trip.status == "planned"
+            )
+            .order_by(Trip.id.desc())
+            .first()
+        )
 
     if not trip:
         raise HTTPException(
@@ -379,39 +500,68 @@ def check_route_deviation(
         order.delivery_latitude is None
         or order.delivery_longitude is None
     ):
-        raise HTTPException(
-            status_code=400,
-            detail="Delivery coordinates are missing"
-        )
+        return {
+            "truck_id": truck_id,
+            "trip_id": trip.id,
+            "status": "no_delivery_coordinates",
+            "message": "Delivery coordinates missing",
+            "deviation": {
+                "deviated": False,
+                "distance_from_route_km": 0.0,
+                "threshold_km": deviation_limit_km
+            }
+        }
 
     try:
         current_lat = float(gps_record.latitude)
         current_lon = float(gps_record.longitude)
-
         delivery_lat = float(order.delivery_latitude)
         delivery_lon = float(order.delivery_longitude)
-
     except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid GPS or delivery coordinates"
-        )
-
+        return {
+            "truck_id": truck_id,
+            "trip_id": trip.id,
+            "status": "invalid_coordinates",
+            "message": "Invalid coordinates",
+            "deviation": {
+                "deviated": False,
+                "distance_from_route_km": 0.0,
+                "threshold_km": deviation_limit_km
+            }
+        }
 
     # Compare current GPS location with the ORIGINAL planned route.
-    if not isinstance(trip.planned_route, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="Planned route is missing for this trip"
-        )
+    if not isinstance(trip.planned_route, dict) or not trip.planned_route.get("coordinates"):
+        # Attempt to calculate road route if pickup & delivery coords exist
+        if order.pickup_latitude and order.pickup_longitude and order.delivery_latitude and order.delivery_longitude:
+            try:
+                from app.optimization.road_route import get_road_route
+                route_data = get_road_route(
+                    float(order.pickup_latitude),
+                    float(order.pickup_longitude),
+                    float(order.delivery_latitude),
+                    float(order.delivery_longitude),
+                )
+                trip.planned_route = route_data
+                db.commit()
+                db.refresh(trip)
+            except Exception:
+                pass
 
-    coordinates = trip.planned_route.get("coordinates", [])
+    coordinates = trip.planned_route.get("coordinates", []) if isinstance(trip.planned_route, dict) else []
 
     if not coordinates:
-        raise HTTPException(
-            status_code=400,
-            detail="Planned route has no coordinates"
-        )
+        return {
+            "truck_id": truck_id,
+            "trip_id": trip.id,
+            "status": "no_planned_route",
+            "message": "Planned route not yet computed",
+            "deviation": {
+                "deviated": False,
+                "distance_from_route_km": 0.0,
+                "threshold_km": deviation_limit_km
+            }
+        }
 
     current_lat = float(gps_record.latitude)
     current_lon = float(gps_record.longitude)

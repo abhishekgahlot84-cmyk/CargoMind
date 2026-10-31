@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Truck,
   Users,
   Package,
   Route,
-  MapPin,
-  Fuel,
-  Bell,
   Search,
   ArrowUpRight,
   Clock3,
   CheckCircle2,
+  Sparkles,
+  ShieldCheck,
+  Activity,
+  Layers,
 } from "lucide-react";
 import api from "../services/api";
 
@@ -28,7 +30,7 @@ export default function Dashboard() {
       })
       .catch((err) => {
         console.error("Dashboard API error:", err);
-        setError("Unable to load dashboard statistics.");
+        setError("Unable to load real-time fleet metrics.");
       })
       .finally(() => {
         setLoading(false);
@@ -37,220 +39,253 @@ export default function Dashboard() {
 
   const stats = [
     {
-      label: "Total Trucks",
+      label: "Total Fleet Capacity",
       value: summary?.total_trucks ?? 0,
-      change: "Fleet capacity",
+      sub: "Active heavy & medium vehicles",
       icon: Truck,
-      color: "bg-blue-50 text-blue-600",
+      color: "text-[#0071e3] bg-[#0071e3]/10 dark:text-[#2997ff] dark:bg-[#2997ff]/15",
+      link: "/trucks",
     },
     {
       label: "Available Drivers",
       value: summary?.available_drivers ?? 0,
-      change: "Ready for dispatch",
+      sub: "Rest compliant & ready",
       icon: Users,
-      color: "bg-emerald-50 text-emerald-600",
+      color: "text-[#34c759] bg-[#34c759]/10 dark:text-[#30d158] dark:bg-[#30d158]/15",
+      link: "/drivers",
     },
     {
-      label: "Pending Orders",
+      label: "Pending Consignments",
       value: summary?.pending_orders ?? 0,
-      change: "Awaiting allocation",
+      sub: "Awaiting load allocation",
       icon: Package,
-      color: "bg-amber-50 text-amber-600",
+      color: "text-[#ff9500] bg-[#ff9500]/10 dark:text-[#ff9f0a] dark:bg-[#ff9f0a]/15",
+      link: "/orders",
     },
     {
-      label: "Active Trips",
+      label: "Active Expeditions",
       value: summary?.active_trips ?? 0,
-      change: "Currently in progress",
+      sub: "En route across transit hubs",
       icon: Route,
-      color: "bg-violet-50 text-violet-600",
+      color: "text-[#af52de] bg-[#af52de]/10 dark:text-[#bf5af2] dark:bg-[#bf5af2]/15",
+      link: "/trips",
     },
   ];
 
   return (
-    <div className="min-w-0 flex-1 p-5 text-slate-800 sm:p-8">
-      {/* Dashboard Header */}
-      <header className="mb-8 flex flex-wrap items-center justify-between gap-5">
+    <div className="min-w-0 flex-1 px-6 py-8 sm:px-10 sm:py-10 text-[#1d1d1f] dark:text-[#f5f5f7]">
+      {/* Editorial Header */}
+      <header className="mb-10 flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-blue-600">
-            Fleet overview
-          </p>
+          <div className="inline-flex items-center gap-2 rounded-full border border-black/[0.06] bg-black/[0.03] px-3 py-1 text-xs font-semibold tracking-wide text-[#0071e3] backdrop-blur-md dark:border-white/[0.1] dark:bg-white/[0.05] dark:text-[#2997ff]">
+            <Activity size={12} className="animate-pulse" />
+            OPERATIONAL COMMAND CENTER
+          </div>
 
-          <h2 className="text-3xl font-bold tracking-tight text-slate-900">
-            Dashboard
-          </h2>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-[#1d1d1f] sm:text-4xl dark:text-[#f5f5f7]">
+            Fleet Overview
+          </h1>
 
-          <p className="mt-2 text-sm text-slate-500">
-            Monitor your fleet and manage daily logistics.
+          <p className="mt-1.5 text-sm text-[#6e6e73] dark:text-[#86868b]">
+            Continuous monitoring, OR-Tools optimization, and automated dispatch control.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            aria-label="Search"
-            className="rounded-xl border border-slate-200 bg-white p-3 text-slate-600 hover:bg-slate-100"
+          <Link
+            to="/optimization"
+            className="apple-btn-primary"
           >
-            <Search size={19} />
-          </button>
-
-          <button
-            aria-label="Notifications"
-            className="relative rounded-xl border border-slate-200 bg-white p-3 text-slate-600 hover:bg-slate-100"
-          >
-            <Bell size={19} />
-            <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" />
-          </button>
-
-          <div className="grid h-11 w-11 place-items-center rounded-full bg-blue-100 font-bold text-blue-700">
-            FA
-          </div>
+            <Sparkles size={15} />
+            Run Solver
+          </Link>
         </div>
       </header>
 
-      {/* API Error */}
+      {/* Error Banner */}
       {error && (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
+        <div className="mb-8 flex items-center gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-400">
+          <span className="font-semibold">Notice:</span> {error}
         </div>
       )}
 
-      {/* Statistics Cards */}
-      <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map(({ label, value, change, icon: Icon, color }) => (
-          <article
+      {/* Primary KPI Metrics */}
+      <section className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        {stats.map(({ label, value, sub, icon: Icon, color, link }) => (
+          <Link
             key={label}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+            to={link}
+            className="group apple-card p-6 apple-card-hover"
           >
-            <div className="mb-5 flex items-center justify-between">
-              <div
-                className={`grid h-12 w-12 place-items-center rounded-xl ${color}`}
-              >
-                <Icon size={23} />
+            <div className="flex items-center justify-between">
+              <div className={`grid h-10 w-10 place-items-center rounded-xl ${color}`}>
+                <Icon size={20} />
               </div>
-
-              <ArrowUpRight size={18} className="text-slate-400" />
+              <ArrowUpRight
+                size={16}
+                className="text-[#86868b] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#1d1d1f] dark:group-hover:text-[#f5f5f7]"
+              />
             </div>
 
-            <p className="text-sm text-slate-500">{label}</p>
+            <p className="mt-5 text-xs font-medium tracking-tight text-[#6e6e73] dark:text-[#86868b]">
+              {label}
+            </p>
 
-            <h3 className="mt-1 text-3xl font-bold text-slate-900">
-              {loading ? "..." : value}
-            </h3>
+            <h2 className="mt-1 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+              {loading ? "—" : value}
+            </h2>
 
-            <p className="mt-3 text-xs text-slate-500">{change}</p>
-          </article>
+            <p className="mt-2 text-xs text-[#86868b] dark:text-[#6e6e73]">
+              {sub}
+            </p>
+          </Link>
         ))}
       </section>
 
-      {/* Main Dashboard Panels */}
-      <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        {/* Fleet Activity */}
-        <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+      {/* Operational Panels Grid */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Fleet Transit Activity */}
+        <article className="apple-card p-7 lg:col-span-2">
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-lg font-bold text-slate-900">
-                Fleet activity
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                Overview of trip operations
+              <h2 className="text-lg font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                Transit Operations
+              </h2>
+              <p className="mt-0.5 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                Real-time lifecycle breakdown across current shipments
               </p>
             </div>
 
-            <span className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-500">
-              Trip overview
-            </span>
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-black/[0.02] px-3 py-1 text-xs font-medium text-[#6e6e73] dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-[#86868b]">
+              <Layers size={13} />
+              Live DB Telemetry
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl bg-blue-50/70 p-4">
-              <Truck className="mb-3 text-blue-600" size={21} />
-              <p className="text-sm text-slate-500">On the road</p>
-              <p className="mt-1 text-2xl font-bold text-slate-900">
-                {loading ? "..." : summary?.active_trips ?? 0}
+            <div className="rounded-2xl border border-black/[0.06] bg-black/[0.02] p-5 dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="flex items-center gap-2 text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+                <Truck size={15} className="text-[#0071e3] dark:text-[#2997ff]" />
+                En Route
+              </div>
+              <p className="mt-3 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                {loading ? "—" : summary?.active_trips ?? 0}
               </p>
+              <p className="mt-1 text-xs text-[#86868b]">Active highway runs</p>
             </div>
 
-            <div className="rounded-xl bg-emerald-50/70 p-4">
-              <CheckCircle2
-                className="mb-3 text-emerald-600"
-                size={21}
+            <div className="rounded-2xl border border-black/[0.06] bg-black/[0.02] p-5 dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="flex items-center gap-2 text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+                <CheckCircle2 size={15} className="text-[#34c759] dark:text-[#30d158]" />
+                Delivered
+              </div>
+              <p className="mt-3 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                {loading ? "—" : summary?.completed_orders ?? 0}
+              </p>
+              <p className="mt-1 text-xs text-[#86868b]">Completed orders</p>
+            </div>
+
+            <div className="rounded-2xl border border-black/[0.06] bg-black/[0.02] p-5 dark:border-white/[0.08] dark:bg-white/[0.03]">
+              <div className="flex items-center gap-2 text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+                <Clock3 size={15} className="text-[#ff9500] dark:text-[#ff9f0a]" />
+                Unassigned
+              </div>
+              <p className="mt-3 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                {loading ? "—" : summary?.pending_orders ?? 0}
+              </p>
+              <p className="mt-1 text-xs text-[#86868b]">Pending allocation</p>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 dark:border-white/[0.06] dark:bg-white/[0.02]">
+            <div className="flex items-center gap-3">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]">
+                <ShieldCheck size={18} />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  Driver Duty & Compliance Engine
+                </p>
+                <p className="text-xs text-[#6e6e73] dark:text-[#86868b]">
+                  Automated checks enforcing maximum driving hours and mandatory 11h rest periods.
+                </p>
+              </div>
+            </div>
+
+            <Link
+              to="/handovers"
+              className="apple-btn-secondary text-xs shrink-0"
+            >
+              View Relay Schedule
+            </Link>
+          </div>
+        </article>
+
+        {/* Smart Optimization Card */}
+        <Link
+          to="/optimization"
+          role="button"
+          tabIndex={0}
+          aria-label="Smart Optimization: Launch OR-Tools SCIP and VRP solver"
+          className="group apple-card p-7 flex flex-col justify-between apple-card-hover focus:outline-none focus:ring-2 focus:ring-[#0071e3] transition cursor-pointer"
+        >
+          <div>
+            <div className="mb-4 inline-flex items-center gap-2 rounded-xl bg-[#0071e3]/10 px-3 py-1.5 text-xs font-semibold text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]">
+              <Sparkles size={14} className="group-hover:rotate-12 transition-transform duration-300" />
+              Smart Optimization
+            </div>
+
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                Smart Optimization Engine
+              </h2>
+              <ArrowUpRight
+                size={18}
+                className="text-[#86868b] transition-transform duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#0071e3] dark:group-hover:text-[#2997ff]"
               />
-              <p className="text-sm text-slate-500">Completed orders</p>
-              <p className="mt-1 text-2xl font-bold text-slate-900">
-                {loading
-                  ? "..."
-                  : summary?.completed_orders ?? 0}
-              </p>
             </div>
 
-            <div className="rounded-xl bg-amber-50/70 p-4">
-              <Clock3 className="mb-3 text-amber-600" size={21} />
-              <p className="text-sm text-slate-500">Awaiting dispatch</p>
-              <p className="mt-1 text-2xl font-bold text-slate-900">
-                {loading ? "..." : summary?.pending_orders ?? 0}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-6 rounded-xl border border-dashed border-slate-300 p-8 text-center">
-            <MapPin className="mx-auto mb-3 text-slate-400" size={30} />
-
-            <p className="font-medium text-slate-700">Fleet route map</p>
-
-            <p className="mt-1 text-sm text-slate-500">
-              Map integration will be added in a later step.
+            <p className="mt-2 text-xs leading-relaxed text-[#6e6e73] dark:text-[#86868b]">
+              Execute dual-constraint integer programming (SCIP) and multi-stop vehicle routing (VRP) across pending consignments and available fleet trucks.
             </p>
-          </div>
-        </article>
 
-        {/* Route Optimization */}
-        <article className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="mb-5">
-            <div className="mb-3 grid h-12 w-12 place-items-center rounded-xl bg-indigo-50 text-indigo-600">
-              <Route size={24} />
-            </div>
+            <div className="mt-6 space-y-2.5">
+              <div className="flex items-center justify-between rounded-xl border border-black/[0.06] bg-black/[0.02] px-3.5 py-2.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.02]">
+                <span className="text-[#6e6e73] dark:text-[#86868b]">SCIP Load Allocation</span>
+                <span className="inline-flex items-center gap-1 font-semibold text-[#34c759] dark:text-[#30d158]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#34c759] dark:bg-[#30d158]" />
+                  Active
+                </span>
+              </div>
 
-            <h3 className="text-lg font-bold text-slate-900">
-              Route optimization
-            </h3>
+              <div className="flex items-center justify-between rounded-xl border border-black/[0.06] bg-black/[0.02] px-3.5 py-2.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.02]">
+                <span className="text-[#6e6e73] dark:text-[#86868b]">VRP Multi-Stop Router</span>
+                <span className="inline-flex items-center gap-1 font-semibold text-[#34c759] dark:text-[#30d158]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#34c759] dark:bg-[#30d158]" />
+                  Active
+                </span>
+              </div>
 
-            <p className="mt-2 text-sm leading-6 text-slate-500">
-              Generate route and load recommendations using your existing
-              backend.
-            </p>
-          </div>
-
-          <div className="mb-5 space-y-3 rounded-xl bg-slate-50 p-4">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Distance planning</span>
-              <span className="font-semibold text-slate-700">
-                Available
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Fuel estimates</span>
-              <span className="font-semibold text-slate-700">
-                Available
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">ML predictions</span>
-              <span className="font-semibold text-slate-700">
-                Not used
-              </span>
+              <div className="flex items-center justify-between rounded-xl border border-black/[0.06] bg-black/[0.02] px-3.5 py-2.5 text-xs dark:border-white/[0.06] dark:bg-white/[0.02]">
+                <span className="text-[#6e6e73] dark:text-[#86868b]">Turn-by-Turn Geometry</span>
+                <span className="inline-flex items-center gap-1 font-semibold text-[#34c759] dark:text-[#30d158]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#34c759] dark:bg-[#30d158]" />
+                  Ready
+                </span>
+              </div>
             </div>
           </div>
 
-          <p className="rounded-xl bg-blue-50 p-3 text-sm leading-5 text-blue-700">
-            Your existing optimization engine will be connected here.
-          </p>
-        </article>
+          <div className="mt-6 pt-5 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between text-xs font-semibold text-[#0071e3] dark:text-[#2997ff]">
+            <span>Launch Optimization Workspace</span>
+            <ArrowUpRight size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+          </div>
+        </Link>
       </section>
 
-      <footer className="mt-8 text-center text-xs text-slate-400">
-        AI Fleet Optimization · Logistics workspace
+      {/* Refined Minimalist Footer */}
+      <footer className="mt-14 border-t border-black/[0.06] pt-6 text-center text-xs text-[#86868b] dark:border-white/[0.08]">
+        CargoMind Fleet Intelligence · Engineered for precision logistics & autonomous fleet routing
       </footer>
     </div>
   );

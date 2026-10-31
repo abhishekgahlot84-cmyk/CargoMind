@@ -1,1 +1,248 @@
 @import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-cm-bg: var(--cm-bg);
+  --color-cm-bg-subtle: var(--cm-bg-subtle);
+  --color-cm-surface: var(--cm-surface);
+  --color-cm-surface-subtle: var(--cm-surface-subtle);
+  --color-cm-surface-elevated: var(--cm-surface-elevated);
+  --color-cm-border: var(--cm-border);
+  --color-cm-border-subtle: var(--cm-border-subtle);
+  --color-cm-border-strong: var(--cm-border-strong);
+  --color-cm-text-primary: var(--cm-text-primary);
+  --color-cm-text-secondary: var(--cm-text-secondary);
+  --color-cm-text-tertiary: var(--cm-text-tertiary);
+  --color-cm-accent: var(--cm-accent);
+  --color-cm-accent-hover: var(--cm-accent-hover);
+  --color-cm-accent-bg: var(--cm-accent-bg);
+  --color-cm-success: var(--cm-success);
+  --color-cm-success-bg: var(--cm-success-bg);
+  --color-cm-warning: var(--cm-warning);
+  --color-cm-warning-bg: var(--cm-warning-bg);
+  --color-cm-danger: var(--cm-danger);
+  --color-cm-danger-bg: var(--cm-danger-bg);
+}
+
+:root {
+  color-scheme: light;
+  --font-apple: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  
+  /* Apple Design System Light Tokens */
+  --cm-bg: #fbfbfd;
+  --cm-bg-subtle: #f5f5f7;
+  --cm-surface: #ffffff;
+  --cm-surface-subtle: #f5f5f7;
+  --cm-surface-elevated: #ffffff;
+  --cm-border: rgba(0, 0, 0, 0.08);
+  --cm-border-subtle: rgba(0, 0, 0, 0.04);
+  --cm-border-strong: rgba(0, 0, 0, 0.16);
+  --cm-text-primary: #1d1d1f;
+  --cm-text-secondary: #6e6e73;
+  --cm-text-tertiary: #86868b;
+  --cm-accent: #0071e3;
+  --cm-accent-hover: #0077ed;
+  --cm-accent-bg: rgba(0, 113, 227, 0.08);
+  --cm-success: #34c759;
+  --cm-success-bg: rgba(52, 199, 89, 0.1);
+  --cm-warning: #ff9500;
+  --cm-warning-bg: rgba(255, 149, 0, 0.1);
+  --cm-danger: #ff3b30;
+  --cm-danger-bg: rgba(255, 59, 48, 0.1);
+  --cm-card-shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 0 1px rgba(0, 0, 0, 0.08);
+  --cm-elevated-shadow: 0 12px 32px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.dark, [data-theme="dark"] {
+  color-scheme: dark;
+  /* Apple Design System Dark Tokens */
+  --cm-bg: #000000;
+  --cm-bg-subtle: #0d0d0e;
+  --cm-surface: #161618;
+  --cm-surface-subtle: #1c1c1e;
+  --cm-surface-elevated: #242426;
+  --cm-border: rgba(255, 255, 255, 0.1);
+  --cm-border-subtle: rgba(255, 255, 255, 0.05);
+  --cm-border-strong: rgba(255, 255, 255, 0.2);
+  --cm-text-primary: #f5f5f7;
+  --cm-text-secondary: #a1a1a6;
+  --cm-text-tertiary: #86868b;
+  --cm-accent: #2997ff;
+  --cm-accent-hover: #52aaff;
+  --cm-accent-bg: rgba(41, 151, 255, 0.15);
+  --cm-success: #30d158;
+  --cm-success-bg: rgba(48, 209, 88, 0.15);
+  --cm-warning: #ff9f0a;
+  --cm-warning-bg: rgba(255, 159, 10, 0.15);
+  --cm-danger: #ff453a;
+  --cm-danger-bg: rgba(255, 69, 58, 0.15);
+  --cm-card-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 0 1px rgba(255, 255, 255, 0.1);
+  --cm-elevated-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(255, 255, 255, 0.06);
+}
+
+* {
+  border-color: var(--cm-border);
+}
+
+html {
+  font-family: var(--font-apple);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  background-color: var(--cm-bg);
+  color: var(--cm-text-primary);
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--cm-bg);
+  color: var(--cm-text-primary);
+  overflow-x: hidden;
+}
+
+/* Apple Design System Utility Classes */
+.apple-card {
+  background-color: var(--cm-surface);
+  border: 1px solid var(--cm-border);
+  border-radius: 18px;
+  box-shadow: var(--cm-card-shadow);
+  color: var(--cm-text-primary);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.apple-card-hover:hover {
+  border-color: var(--cm-border-strong);
+  transform: translateY(-1px);
+}
+
+.apple-surface {
+  background-color: var(--cm-surface);
+  border: 1px solid var(--cm-border);
+  color: var(--cm-text-primary);
+}
+
+.apple-surface-subtle {
+  background-color: var(--cm-surface-subtle);
+  border: 1px solid var(--cm-border-subtle);
+  color: var(--cm-text-primary);
+}
+
+.apple-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  border-radius: 9999px;
+  padding: 0.55rem 1.15rem;
+  background-color: var(--cm-accent);
+  color: #ffffff;
+  transition: all 0.18s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.apple-btn-primary:hover {
+  background-color: var(--cm-accent-hover);
+  transform: translateY(-0.5px);
+}
+
+.apple-btn-primary:active {
+  transform: translateY(0);
+}
+
+.apple-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  border-radius: 9999px;
+  padding: 0.55rem 1.15rem;
+  background-color: var(--cm-surface-subtle);
+  color: var(--cm-text-primary);
+  border: 1px solid var(--cm-border);
+  transition: all 0.18s ease;
+}
+
+.apple-btn-secondary:hover {
+  background-color: var(--cm-border-subtle);
+  border-color: var(--cm-border-strong);
+}
+
+.apple-input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--cm-border);
+  background-color: var(--cm-surface);
+  padding: 0.65rem 0.875rem;
+  font-size: 0.875rem;
+  color: var(--cm-text-primary);
+  transition: all 0.18s ease;
+}
+
+.apple-input::placeholder {
+  color: var(--cm-text-tertiary);
+}
+
+.apple-input-with-icon {
+  padding-left: 2.75rem !important; /* 44px - guarantees >= 40px clearance */
+}
+
+.apple-input-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.apple-input:focus {
+  outline: none;
+  border-color: var(--cm-accent);
+  box-shadow: 0 0 0 3px var(--cm-accent-bg);
+}
+
+.apple-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Custom delicate scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(134, 134, 139, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(134, 134, 139, 0.45);
+}
