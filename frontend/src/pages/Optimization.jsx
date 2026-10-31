@@ -18,12 +18,19 @@ import {
   Code,
   RotateCcw,
   Sparkles,
+  ShieldCheck,
+  ShieldAlert,
+  ChevronRight,
+  MapPin,
+  TrendingDown,
+  Navigation,
 } from "lucide-react";
 import api from "../services/api";
 
 export default function Optimization() {
   const [trucks, setTrucks] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [activeTrips, setActiveTrips] = useState([]);
   const [truckId, setTruckId] = useState("");
   const [driverId, setDriverId] = useState("");
   const [fuelPrice, setFuelPrice] = useState(90);
@@ -38,21 +45,35 @@ export default function Optimization() {
   const [seedVal, setSeedVal] = useState(42);
   const [resettingDemo, setResettingDemo] = useState(false);
 
+  // 3 Route Alternatives state
+  const [selectedTripForAlternatives, setSelectedTripForAlternatives] = useState("");
+  const [evaluatingAlternatives, setEvaluatingAlternatives] = useState(false);
+  const [alternativesResult, setAlternativesResult] = useState(null);
+  const [alternativesError, setAlternativesError] = useState("");
+  const [selectedRouteId, setSelectedRouteId] = useState("route_b");
+  const [confirmingRoute, setConfirmingRoute] = useState(false);
+  const [confirmSuccessMsg, setConfirmSuccessMsg] = useState("");
+
   async function loadResources() {
     try {
-      const [trucksRes, driversRes] = await Promise.all([
+      const [trucksRes, driversRes, tripsRes] = await Promise.all([
         api.get("/trucks/").catch(() => ({ data: [] })),
         api.get("/drivers/").catch(() => ({ data: [] })),
+        api.get("/trips/").catch(() => ({ data: [] })),
       ]);
       const tList = Array.isArray(trucksRes.data) ? trucksRes.data : [];
       const dList = Array.isArray(driversRes.data) ? driversRes.data : [];
+      const trList = Array.isArray(tripsRes.data) ? tripsRes.data : [];
+
       setTrucks(tList);
       setDrivers(dList);
+      setActiveTrips(trList.filter((t) => ["planned", "in_progress"].includes(t.status)));
 
       if (tList.length > 0 && !truckId) setTruckId(tList[0].id);
       if (dList.length > 0 && !driverId) setDriverId(dList[0].id);
+      if (trList.length > 0 && !selectedTripForAlternatives) setSelectedTripForAlternatives(String(trList[0].id));
     } catch (e) {
-      console.error("Failed to load trucks or drivers for optimization", e);
+      console.error("Failed to load resources for optimization", e);
     }
   }
 
@@ -71,7 +92,7 @@ export default function Optimization() {
         `Status sync complete: ${fixedTrucks} trucks and ${fixedDrivers} drivers updated to available.`
       );
       await loadResources();
-    } catch (e) {
+    } catch {
       setRepairMsg("Status repair failed. Please check backend.");
     } finally {
       setRepairing(false);
@@ -85,7 +106,7 @@ export default function Optimization() {
       const res = await api.post(`/optimization/reset-demo?random_seed=${seedVal}&create_backup=true`);
       const data = res.data || {};
       setRepairMsg(
-        `Demo fleet reset successfully! Seeded ${data.hubs_seeded || 12} Indian logistics hubs, ${data.trucks_seeded || 16} trucks (${data.available_trucks || 11} available), ${data.drivers_seeded || 20} drivers, ${data.pending_consignments || 25} pending consignments. (Backup saved to: ${data.backup_file || 'backend/backups/'})`
+        `Demo fleet reset successfully! Seeded ${data.hubs_seeded || 18} hubs, ${data.trucks_seeded || 16} trucks, ${data.drivers_seeded || 20} drivers, ${data.consignments_seeded || 30} consignments.`
       );
       setShowResetModal(false);
       await loadResources();
@@ -133,7 +154,7 @@ export default function Optimization() {
         data: response.data,
       });
 
-      loadResources();
+      await loadResources();
     } catch (err) {
       const detail = err.response?.data?.detail;
       setError(
@@ -145,6 +166,79 @@ export default function Optimization() {
       setActiveAction("");
     }
   }
+
+  async function handleEvaluateAlternatives(tripIdParam) {
+    const targetTripId = tripIdParam || selectedTripForAlternatives;
+    if (!targetTripId) {
+      setAlternativesError("Please select a trip or expedition to evaluate alternatives.");
+      return;
+    }
+
+    setEvaluatingAlternatives(true);
+    setAlternativesError("");
+    setConfirmSuccessMsg("");
+
+    try {
+      const res = await api.post("/optimization/route-alternatives", {
+        trip_id: Number(targetTripId),
+        diesel_price: Number(fuelPrice) || 90.0,
+      });
+
+      setAlternativesResult({
+        trip_id: Number(targetTripId),
+        ...res.data,
+      });
+      // Default selection to AI Recommended
+      setSelectedRouteId("route_b");
+    } catch (err) {
+      console.error("Route alternatives error:", err);
+      const detail = err.response?.data?.detail || err.message;
+      setAlternativesError(
+        typeof detail === "string" ? detail : "Failed to compute route alternatives."
+      );
+    } finally {
+      setEvaluatingAlternatives(false);
+    }
+  }
+
+  async function handleConfirmRoute(route) {
+    if (!alternativesResult?.trip_id || !route) return;
+
+    setConfirmingRoute(true);
+    setConfirmSuccessMsg("");
+    setAlternativesError("");
+
+    try {
+      const payload = {
+        trip_id: alternativesResult.trip_id,
+        route_tag: route.tag,
+        distance_km: route.distance_km,
+        estimated_time_minutes: route.total_transit_minutes || route.duration_minutes,
+        fuel_cost: route.fuel_cost,
+        coordinates: route.coordinates,
+        toll_info: route.toll_display,
+        saving_note: route.saving_note,
+        ai_reason: route.ai_reason,
+      };
+
+      const res = await api.post("/optimization/confirm-route", payload);
+      setConfirmSuccessMsg(
+        `Route option '${route.tag}' confirmed! Persisted ${route.distance_km} km and ETA ${route.eta_display} to Trip #${alternativesResult.trip_id}.`
+      );
+      await loadResources();
+    } catch (err) {
+      console.error("Failed to confirm route:", err);
+      const detail = err.response?.data?.detail || err.message;
+      setAlternativesError(typeof detail === "string" ? detail : "Failed to persist confirmed route.");
+    } finally {
+      setConfirmingRoute(false);
+    }
+  }
+
+  const selectedRouteObj =
+    alternativesResult?.routes?.find((r) => r.id === selectedRouteId) ||
+    alternativesResult?.routes?.[0] ||
+    null;
 
   const actions = [
     {
@@ -160,7 +254,7 @@ export default function Optimization() {
       id: "route",
       title: "Single-Truck Route Optimization",
       description:
-        "Calculate an optimized road-following route sequence with turn-by-turn OSRM geometry for the selected vehicle.",
+        "Calculate an optimized road-following route sequence with turn-by-turn highway geometry for the selected vehicle.",
       icon: Route,
       color: "bg-[#af52de]/10 text-[#af52de] dark:bg-[#bf5af2]/15 dark:text-[#bf5af2]",
       button: "Calculate Single Route",
@@ -185,10 +279,10 @@ export default function Optimization() {
             Mathematical Optimization
           </span>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
-            Optimization Solvers
+            Route & Fleet Optimization
           </h1>
           <p className="mt-1.5 text-xs text-[#6e6e73] dark:text-[#86868b]">
-            OR-Tools SCIP dual-capacity packing and VRP constraint multi-vehicle routing with road geometry.
+            OR-Tools constraint solvers, highway trade-offs, and multi-factor logistics evaluation.
           </p>
         </div>
 
@@ -197,229 +291,430 @@ export default function Optimization() {
             onClick={() => handleRepairStatuses()}
             disabled={repairing}
             className="apple-btn-secondary text-xs"
-            title="Sync stuck truck and driver statuses"
+            title="Sync truck and driver statuses with database"
           >
-            <Wrench size={13} className={repairing ? "animate-spin" : ""} />
-            Sync Statuses
+            <RefreshCw size={13} className={repairing ? "animate-spin" : ""} />
+            {repairing ? "Syncing..." : "Sync Fleet Statuses"}
           </button>
           <button
             onClick={() => setShowResetModal(true)}
-            disabled={repairing || resettingDemo}
-            className="apple-btn-primary text-xs"
-            title="Safe reset and seed Indian logistics demo fleet"
+            className="apple-btn-secondary text-xs border-amber-500/30 text-amber-600 dark:text-amber-400"
+            title="Safely reset and reseed realistic Indian logistics fleet data"
           >
-            <RotateCcw size={13} className={resettingDemo ? "animate-spin" : ""} />
+            <RotateCcw size={13} />
             Reset Demo Fleet
           </button>
         </div>
       </header>
 
       {repairMsg && (
-        <div className="mb-6 rounded-2xl border border-[#0071e3]/20 bg-[#0071e3]/10 p-4 text-xs font-medium text-[#0071e3] flex items-center gap-2 dark:text-[#2997ff]">
-          <CheckCircle2 size={15} />
-          {repairMsg}
+        <div className="mb-6 flex items-center justify-between rounded-2xl border border-[#34c759]/20 bg-[#34c759]/10 p-4 text-xs font-medium text-[#34c759] dark:border-[#30d158]/20 dark:bg-[#30d158]/10 dark:text-[#30d158]">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} />
+            {repairMsg}
+          </div>
+          <button onClick={() => setRepairMsg("")} className="text-xs opacity-70 hover:opacity-100">
+            ×
+          </button>
         </div>
       )}
 
-      {/* Parameter Controls */}
-      <section className="apple-card p-7 mb-8">
-        <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-          Solver Parameters
-        </h2>
-        <p className="mt-0.5 text-xs text-[#6e6e73] dark:text-[#86868b]">
-          Configure vehicles, drivers, and fuel pricing for the solver runs.
-        </p>
-
-        <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-3">
+      {/* SECTION 1: 3 ROUTE OPTIONS (DESIGN REFERENCE MATCH) */}
+      <section className="mb-10">
+        <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
           <div>
-            <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
-              Select Vehicle (for Single Route)
+            <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#0071e3] dark:text-[#2997ff]">
+              ROUTE TRADEOFF ANALYSIS
+            </span>
+            <h2 className="mt-0.5 text-xl font-bold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+              Choose the tradeoff you actually want.
+            </h2>
+            <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+              Evaluate 3 distinct route alternatives computed with real highway distance, ETA, fuel, and tolls.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <select
+              value={selectedTripForAlternatives}
+              onChange={(e) => setSelectedTripForAlternatives(e.target.value)}
+              className="apple-input text-xs w-auto py-1.5"
+            >
+              {activeTrips.length === 0 ? (
+                <option value="">No Active Expeditions</option>
+              ) : (
+                activeTrips.map((tr) => (
+                  <option key={tr.id} value={tr.id}>
+                    Trip #{tr.id} · {tr.truck_registration || `Truck #${tr.truck_id}`} ({tr.pickup_location?.split(",")[0] || "Origin"} → {tr.delivery_location?.split(",")[0] || "Dest"})
+                  </option>
+                ))
+              )}
+            </select>
+            <button
+              onClick={() => handleEvaluateAlternatives()}
+              disabled={evaluatingAlternatives || activeTrips.length === 0}
+              className="apple-btn-primary text-xs flex items-center gap-1.5"
+            >
+              {evaluatingAlternatives ? (
+                <LoaderCircle size={13} className="animate-spin" />
+              ) : (
+                <Sparkles size={13} />
+              )}
+              {evaluatingAlternatives ? "Evaluating..." : "Optimize route"}
+            </button>
+          </div>
+        </div>
+
+        {alternativesError && (
+          <div className="mb-6 flex items-center gap-2 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-600 dark:text-red-400">
+            <AlertCircle size={16} />
+            {alternativesError}
+          </div>
+        )}
+
+        {confirmSuccessMsg && (
+          <div className="mb-6 flex items-center gap-2 rounded-2xl border border-[#34c759]/20 bg-[#34c759]/10 p-4 text-xs font-semibold text-[#34c759] dark:text-[#30d158]">
+            <CheckCircle2 size={16} />
+            {confirmSuccessMsg}
+          </div>
+        )}
+
+        {/* Route Cards Grid (Reference Design Match) */}
+        {evaluatingAlternatives ? (
+          <div className="apple-card p-12 text-center">
+            <LoaderCircle size={28} className="mx-auto mb-3 animate-spin text-[#0071e3] dark:text-[#2997ff]" />
+            <p className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+              Analyzing Highway Corridors across India...
+            </p>
+            <p className="mt-1 text-[11px] text-[#86868b]">
+              Computing Google Routes & OSRM alternatives, fuel burn at truck mileage, night fatigue, and toll fees.
+            </p>
+          </div>
+        ) : alternativesResult?.routes?.length > 0 ? (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {alternativesResult.routes.map((rt) => {
+                const isSelected = selectedRouteId === rt.id;
+                const isRecommended = rt.route_label === "recommended";
+
+                return (
+                  <article
+                    key={rt.id}
+                    onClick={() => setSelectedRouteId(rt.id)}
+                    className={`relative cursor-pointer rounded-2xl p-6 transition-all duration-200 ${
+                      isSelected
+                        ? "border-2 border-[#0071e3] bg-gradient-to-br from-blue-50/60 to-indigo-50/40 shadow-lg dark:border-[#2997ff] dark:from-blue-950/30 dark:to-indigo-950/20"
+                        : isRecommended
+                        ? "border border-blue-200 bg-blue-50/20 hover:border-blue-400 dark:border-blue-900/50 dark:bg-blue-950/10"
+                        : "apple-card hover:border-black/20 dark:hover:border-white/20"
+                    }`}
+                  >
+                    {/* Tag badge */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#6e6e73] dark:text-[#86868b]">
+                        ROUTE {rt.id.slice(-1).toUpperCase()} · {rt.tag}
+                      </span>
+                      {isSelected && (
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#0071e3] text-white dark:bg-[#2997ff]">
+                          ✓
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Headline metrics */}
+                    <h3 className="mt-3.5 text-xl font-bold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      {Math.round(rt.distance_km).toLocaleString()} km · {rt.eta_display} ETA
+                    </h3>
+
+                    {/* Cost & Toll */}
+                    <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                      Fuel ₹{Math.round(rt.fuel_cost).toLocaleString()} · Toll {rt.toll_display}
+                    </p>
+
+                    {/* Dynamic Saving Note */}
+                    {rt.saving_note && (
+                      <b className={`mt-3 block text-xs font-semibold ${
+                        isRecommended ? "text-[#0071e3] dark:text-[#2997ff]" : "text-[#34c759] dark:text-[#30d158]"
+                      }`}>
+                        {rt.saving_note}
+                      </b>
+                    )}
+
+                    {/* AI Recommendation Reason */}
+                    {rt.ai_reason && (
+                      <p className="mt-2 text-[11px] leading-relaxed text-[#6e6e73] dark:text-[#86868b] border-t border-black/[0.06] pt-2 dark:border-white/[0.08]">
+                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">Why AI picked this:</span> {rt.ai_reason}
+                      </p>
+                    )}
+
+                    {/* Night driving and risk indicator */}
+                    <div className="mt-4 flex items-center justify-between text-[10px] text-[#86868b] border-t border-black/[0.04] pt-2 dark:border-white/[0.06]">
+                      <span>Night window (22-03h): {rt.night_hours}h</span>
+                      <span className="font-medium">Risk Score: {rt.risk_score}</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            {/* Selected Route Action Bar & Map View */}
+            <div className="apple-card overflow-hidden">
+              <div className="flex flex-col justify-between gap-4 border-b border-black/[0.06] p-5 sm:flex-row sm:items-center dark:border-white/[0.08]">
+                <div>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#0071e3] dark:text-[#2997ff]">
+                    Selected Highway Polyline
+                  </span>
+                  <h4 className="text-sm font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Route {selectedRouteObj?.id?.slice(-1)?.toUpperCase()} ({selectedRouteObj?.tag}): {selectedRouteObj?.distance_km} km • ETA {selectedRouteObj?.eta_display}
+                  </h4>
+                  <p className="text-xs text-[#6e6e73] dark:text-[#86868b]">
+                    Validated strictly within Survey of India sovereign borders. Ready for vehicle assignment.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => handleConfirmRoute(selectedRouteObj)}
+                    disabled={confirmingRoute || !selectedRouteObj}
+                    className="apple-btn-primary text-xs flex items-center gap-1.5"
+                  >
+                    {confirmingRoute ? (
+                      <LoaderCircle size={13} className="animate-spin" />
+                    ) : (
+                      <CheckCircle2 size={14} />
+                    )}
+                    {confirmingRoute ? "Persisting..." : "Confirm Route"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Map Polyline Visualizer (Coordinates Preview) */}
+              <div className="p-6">
+                <div className="relative h-64 w-full overflow-hidden rounded-2xl border border-black/[0.08] bg-[#0c1017] p-4 text-white">
+                  <div className="absolute top-3 left-3 z-10 rounded-lg bg-black/60 px-3 py-1.5 text-[11px] backdrop-blur-md">
+                    <span className="text-[#34c759]">● Live Corridor:</span> {selectedRouteObj?.coordinates?.length || 0} highway waypoints
+                  </div>
+                  <div className="absolute bottom-3 right-3 z-10 rounded-lg bg-black/60 px-3 py-1.5 text-[10px] font-mono text-[#86868b] backdrop-blur-md">
+                    India Sovereign Territory (Survey of India Compliant)
+                  </div>
+
+                  {/* SVG Route Projection */}
+                  {selectedRouteObj?.coordinates && selectedRouteObj.coordinates.length > 1 ? (
+                    <svg className="h-full w-full" viewBox="0 0 800 240" preserveAspectRatio="none">
+                      {/* Grid background lines */}
+                      <line x1="0" y1="60" x2="800" y2="60" stroke="#1f293d" strokeDasharray="4 4" />
+                      <line x1="0" y1="120" x2="800" y2="120" stroke="#1f293d" strokeDasharray="4 4" />
+                      <line x1="0" y1="180" x2="800" y2="180" stroke="#1f293d" strokeDasharray="4 4" />
+
+                      {/* Transform coordinates into SVG path */}
+                      {(() => {
+                        const coords = selectedRouteObj.coordinates;
+                        const lons = coords.map((c) => c[0]);
+                        const lats = coords.map((c) => c[1]);
+                        const minLon = Math.min(...lons);
+                        const maxLon = Math.max(...lons) || minLon + 1;
+                        const minLat = Math.min(...lats);
+                        const maxLat = Math.max(...lats) || minLat + 1;
+
+                        const pointsStr = coords
+                          .map((c) => {
+                            const x = 50 + ((c[0] - minLon) / (maxLon - minLon)) * 700;
+                            const y = 200 - ((c[1] - minLat) / (maxLat - minLat)) * 160;
+                            return `${x.toFixed(1)},${y.toFixed(1)}`;
+                          })
+                          .join(" ");
+
+                        const firstPt = coords[0];
+                        const lastPt = coords[coords.length - 1];
+                        const x0 = 50 + ((firstPt[0] - minLon) / (maxLon - minLon)) * 700;
+                        const y0 = 200 - ((firstPt[1] - minLat) / (maxLat - minLat)) * 160;
+                        const x1 = 50 + ((lastPt[0] - minLon) / (maxLon - minLon)) * 700;
+                        const y1 = 200 - ((lastPt[1] - minLat) / (maxLat - minLat)) * 160;
+
+                        return (
+                          <>
+                            {/* Highway Polyline */}
+                            <polyline
+                              fill="none"
+                              stroke={selectedRouteId === "route_b" ? "#3b79e9" : "#34c759"}
+                              strokeWidth="3.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              points={pointsStr}
+                            />
+                            {/* Start Pin */}
+                            <circle cx={x0} cy={y0} r="6" fill="#3b79e9" stroke="#ffffff" strokeWidth="2" />
+                            <text x={x0} y={y0 - 10} fill="#ffffff" fontSize="10" fontWeight="bold" textAnchor="middle">
+                              Origin
+                            </text>
+                            {/* Destination Pin */}
+                            <circle cx={x1} cy={y1} r="6" fill="#34c759" stroke="#ffffff" strokeWidth="2" />
+                            <text x={x1} y={y1 - 10} fill="#ffffff" fontSize="10" fontWeight="bold" textAnchor="middle">
+                              Destination
+                            </text>
+                          </>
+                        );
+                      })()}
+                    </svg>
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-xs text-[#86868b]">
+                      No polyline coordinates available
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="apple-card p-8 text-center border-dashed">
+            <Route size={32} className="mx-auto mb-2 text-[#86868b] opacity-60" />
+            <h3 className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+              Ready to evaluate highway route options
+            </h3>
+            <p className="mt-1 text-[11px] text-[#86868b]">
+              Select an active expedition above and click &quot;Optimize route&quot; to generate Fastest, AI Recommended, and Safest route cards.
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* SECTION 2: CONFIGURATION & SOLVERS */}
+      <div className="apple-card p-6 mb-8">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-[#86868b] mb-4">
+          Fleet Simulation Inputs
+        </h3>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+              Assigned Truck
             </label>
             <select
               value={truckId}
               onChange={(e) => setTruckId(e.target.value)}
               className="apple-input text-xs"
             >
-              {trucks.length === 0 ? (
-                <option value="">No trucks available</option>
-              ) : (
-                trucks.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.registration_number || `Truck #${t.id}`} (Cap: {t.capacity} kg) • {t.status}
-                  </option>
-                ))
-              )}
+              {trucks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.registration_number} ({t.capacity} kg) - {t.status}
+                </option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
-              Select Driver (for Single Route)
+            <label className="mb-1 block text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+              Designated Driver
             </label>
             <select
               value={driverId}
               onChange={(e) => setDriverId(e.target.value)}
               className="apple-input text-xs"
             >
-              {drivers.length === 0 ? (
-                <option value="">No drivers available</option>
-              ) : (
-                drivers.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name || `Driver #${d.id}`} ({d.license_category || "Standard"}) • {d.status}
-                  </option>
-                ))
-              )}
+              {drivers.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} (Wellness: {d.wellness_score || 85} · {d.status})
+                </option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
-              Diesel Price (₹ / Litre)
+            <label className="mb-1 block text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
+              Diesel Rate (₹/Litre)
             </label>
             <input
               type="number"
-              min="0"
-              step="any"
               value={fuelPrice}
               onChange={(e) => setFuelPrice(e.target.value)}
               className="apple-input text-xs"
+              min="1"
             />
           </div>
         </div>
-      </section>
+      </div>
 
-      {/* Solver Action Cards with strict card height and aligned bottom buttons */}
-      <section className="grid grid-cols-1 gap-6 xl:grid-cols-3 items-stretch">
-        {actions.map(({ id, title, description, icon: Icon, color, button }) => (
-          <article
-            key={id}
-            className="apple-card p-7 flex flex-col justify-between h-full min-h-[310px] apple-card-hover"
-          >
-            <div className="flex-1 flex flex-col">
-              <div className={`mb-4 grid h-10 w-10 place-items-center rounded-xl ${color}`}>
-                <Icon size={20} />
+      {/* Solvers Cards Grid */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 mb-10">
+        {actions.map((act) => {
+          const Icon = act.icon;
+          const isRunning = activeAction === act.id;
+
+          return (
+            <div key={act.id} className="apple-card flex flex-col justify-between p-6">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className={`rounded-xl p-2.5 ${act.color}`}>
+                    <Icon size={20} />
+                  </div>
+                  <h3 className="font-semibold text-sm text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    {act.title}
+                  </h3>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-[#6e6e73] dark:text-[#86868b]">
+                  {act.description}
+                </p>
               </div>
 
-              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] min-h-[48px] flex items-center">
-                {title}
-              </h2>
-              <p className="mt-2 text-xs leading-relaxed text-[#6e6e73] dark:text-[#86868b]">
-                {description}
-              </p>
+              <div className="mt-6 border-t border-black/[0.06] pt-4 dark:border-white/[0.08]">
+                <button
+                  onClick={() => runOptimization(act.id)}
+                  disabled={Boolean(activeAction)}
+                  className="apple-btn-primary w-full text-xs"
+                >
+                  {isRunning ? (
+                    <>
+                      <LoaderCircle size={14} className="animate-spin" />
+                      Computing Solution...
+                    </>
+                  ) : (
+                    <>
+                      <Play size={14} />
+                      {act.button}
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
+          );
+        })}
+      </div>
 
-            <div className="mt-auto pt-6 w-full">
-              <button
-                disabled={Boolean(activeAction)}
-                onClick={() => runOptimization(id)}
-                className="apple-btn-primary w-full text-xs font-semibold"
-              >
-                {activeAction === id ? (
-                  <LoaderCircle size={15} className="animate-spin" />
-                ) : (
-                  <Play size={14} />
-                )}
-                {activeAction === id ? "Solving MIP Model..." : button}
-              </button>
-            </div>
-          </article>
-        ))}
-      </section>
-
-      {/* Error Banner */}
+      {/* General Solver Error Alert */}
       {error && (
-        <section className="mt-8 rounded-2xl border border-red-500/20 bg-red-500/10 p-5">
-          <div className="flex items-center gap-2 text-xs font-semibold text-red-600 dark:text-red-400">
-            <AlertCircle size={16} />
-            Optimization Solver Error
+        <div className="mb-8 flex items-start gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-5 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-400">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <div className="space-y-1">
+            <h4 className="font-semibold">Optimization Feasibility Exception</h4>
+            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+              {error}
+            </pre>
           </div>
-          <pre className="mt-2 whitespace-pre-wrap break-words text-xs text-red-600 dark:text-red-400">
-            {error}
-          </pre>
-        </section>
+        </div>
       )}
 
-      {/* Results Presentation */}
+      {/* Solver Results View */}
       {result && (
-        <section className="mt-8 apple-card overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/[0.06] p-6 dark:border-white/[0.08]">
-            <div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 size={18} className="text-[#34c759] dark:text-[#30d158]" />
-                <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                  Solver Results — {result.action === "load" ? "Load Allocation" : result.action === "fleet" ? "Fleet Route Optimization" : "Single Route"}
-                </h2>
-                {result.data?.solver_backend && (
-                  <span className="apple-badge bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]">
-                    {result.data.solver_backend}
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 text-xs text-[#86868b]">
-                Status: <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data?.solver_status || result.data?.status || "Optimal"}</strong>
-                {result.data?.objective_value != null && (
-                  <span className="ml-2 text-[#0071e3] dark:text-[#2997ff] font-semibold">
-                    • Objective Cost: ₹{result.data.objective_value}
-                  </span>
-                )}
-                {result.data?.persisted && (
-                  <span className="ml-2 text-[#34c759] dark:text-[#30d158] font-semibold">
-                    • Persisted to DB
-                  </span>
-                )}
-              </p>
+        <div className="apple-card overflow-hidden mb-10">
+          <div className="flex items-center justify-between border-b border-black/[0.06] p-6 dark:border-white/[0.08]">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle2 size={18} className="text-[#34c759] dark:text-[#30d158]" />
+              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                Solver Execution Output
+              </h2>
             </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowRawJson(!showRawJson)}
-                className="apple-btn-secondary text-xs"
-              >
-                <Code size={13} />
-                {showRawJson ? "Hide JSON" : "Raw JSON"}
-              </button>
-            </div>
+            <button
+              onClick={() => setShowRawJson(!showRawJson)}
+              className="apple-btn-secondary text-xs"
+            >
+              <Code size={13} />
+              {showRawJson ? "Hide JSON" : "Raw JSON"}
+            </button>
           </div>
 
           <div className="p-6 space-y-6">
             {result.data?.message && (
               <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] p-4 text-xs font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#f5f5f7]">
                 {result.data.message}
-              </div>
-            )}
-
-            {/* Diagnostic Filter Statistics when no_trucks or diagnostics returned */}
-            {result.data?.diagnostics && (
-              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 dark:bg-amber-500/10">
-                <div className="flex items-center gap-2 text-xs font-semibold text-amber-700 dark:text-amber-400">
-                  <AlertTriangle size={15} />
-                  Fleet Availability Filter Diagnostics
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-                  <div className="bg-white/60 dark:bg-black/30 p-2.5 rounded-xl border border-amber-500/15">
-                    <span className="text-[#86868b] block text-[10px] uppercase font-semibold">Total in DB</span>
-                    <strong className="text-base font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data.diagnostics.total_trucks_in_db ?? 0}</strong>
-                  </div>
-                  <div className="bg-white/60 dark:bg-black/30 p-2.5 rounded-xl border border-amber-500/15">
-                    <span className="text-[#86868b] block text-[10px] uppercase font-semibold">Org Matching</span>
-                    <strong className="text-base font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data.diagnostics.company_matching_count ?? 0}</strong>
-                  </div>
-                  <div className="bg-white/60 dark:bg-black/30 p-2.5 rounded-xl border border-amber-500/15">
-                    <span className="text-[#86868b] block text-[10px] uppercase font-semibold">Valid Capacity</span>
-                    <strong className="text-base font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data.diagnostics.valid_capacity_count ?? 0}</strong>
-                  </div>
-                  <div className="bg-white/60 dark:bg-black/30 p-2.5 rounded-xl border border-amber-500/15">
-                    <span className="text-[#86868b] block text-[10px] uppercase font-semibold">Active Trips</span>
-                    <strong className="text-base font-bold text-amber-600 dark:text-amber-400">
-                      {Array.isArray(result.data.diagnostics.active_trip_truck_ids) ? result.data.diagnostics.active_trip_truck_ids.length : 0}
-                    </strong>
-                  </div>
-                  <div className="bg-white/60 dark:bg-black/30 p-2.5 rounded-xl border border-amber-500/15">
-                    <span className="text-[#86868b] block text-[10px] uppercase font-semibold">Available</span>
-                    <strong className="text-base font-bold text-[#34c759] dark:text-[#30d158]">{result.data.diagnostics.available_trucks_count ?? 0}</strong>
-                  </div>
-                </div>
               </div>
             )}
 
@@ -449,53 +744,15 @@ export default function Optimization() {
 
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div>
-                          <span className="text-[#86868b]">Payload Weight:</span>{" "}
+                          <span className="text-[#86868b]">Payload:</span>{" "}
                           <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{asgn.total_weight_kg ?? asgn.total_weight ?? 0} / {asgn.truck_capacity} kg</strong>
                           <span className="ml-1 text-[#86868b]">({asgn.utilization_percentage}%)</span>
                         </div>
                         <div>
-                          <span className="text-[#86868b]">Est. Fuel Cost:</span>{" "}
+                          <span className="text-[#86868b]">Fuel Cost:</span>{" "}
                           <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">₹{asgn.total_fuel_cost ?? asgn.fuel_cost ?? 0}</strong>
                         </div>
-                        {asgn.total_volume_m3 > 0 && (
-                          <div>
-                            <span className="text-[#86868b]">Volume Payload:</span>{" "}
-                            <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{asgn.total_volume_m3} / {asgn.volume_capacity} m³</strong>
-                          </div>
-                        )}
-                        <div>
-                          <span className="text-[#86868b]">Drive Time:</span>{" "}
-                          <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{asgn.total_driving_hours} hrs</strong>
-                        </div>
                       </div>
-
-                      {Array.isArray(asgn.orders) && asgn.orders.length > 0 && (
-                        <div className="border-t border-black/[0.06] pt-2 space-y-1.5 dark:border-white/[0.08]">
-                          <span className="text-[11px] font-semibold text-[#86868b] uppercase">
-                            Allocated Orders ({asgn.orders.length}):
-                          </span>
-                          {asgn.orders.map((ord, oIdx) => (
-                            <div
-                              key={oIdx}
-                              className="text-xs text-[#1d1d1f] bg-white dark:bg-[#161618] p-2.5 rounded-xl border border-black/[0.06] dark:border-white/[0.08] flex justify-between items-center"
-                            >
-                              <div>
-                                <span className="font-semibold dark:text-[#f5f5f7]">Order #{ord.order_id}</span>:{" "}
-                                <span className="text-[#6e6e73] dark:text-[#86868b]">{ord.pickup_location || "Origin"} → {ord.delivery_location || "Dest"}</span>
-                                {ord.cargo_category && (
-                                  <span className="apple-badge ml-2 bg-black/[0.04] text-[#6e6e73] dark:bg-white/[0.08] dark:text-[#86868b]">
-                                    {ord.cargo_category}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-right">
-                                <span className="font-semibold dark:text-[#f5f5f7]">{ord.weight} kg</span>
-                                <span className="block text-[10px] text-[#86868b]">{ord.distance_km} km</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -510,11 +767,6 @@ export default function Optimization() {
                     <Truck size={15} className="text-[#34c759] dark:text-[#30d158]" />
                     Fleet Vehicle Routes ({result.data.routes.length} Active Vehicles)
                   </h3>
-                  <div className="flex gap-4 text-xs font-medium text-[#6e6e73] dark:text-[#86868b]">
-                    <span>Total Distance: <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data.total_distance_km} km</strong></span>
-                    <span>Total Payload: <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{result.data.total_weight_kg} kg</strong></span>
-                    <span>Total Est. Fuel: <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">₹{result.data.total_fuel_cost}</strong></span>
-                  </div>
                 </div>
 
                 <div className="space-y-4">
@@ -536,25 +788,6 @@ export default function Optimization() {
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-                        <div className="bg-white dark:bg-[#161618] p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08]">
-                          <span className="text-[#86868b]">Payload Carried</span>
-                          <p className="mt-1 font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">{route.total_weight_kg || route.total_weight} / {route.truck_capacity} kg</p>
-                        </div>
-                        <div className="bg-white dark:bg-[#161618] p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08]">
-                          <span className="text-[#86868b]">Orders Routed</span>
-                          <p className="mt-1 font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">{route.order_count} consignments</p>
-                        </div>
-                        <div className="bg-white dark:bg-[#161618] p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08]">
-                          <span className="text-[#86868b]">Total Stops</span>
-                          <p className="mt-1 font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">{route.stops?.length || 2} stops</p>
-                        </div>
-                        <div className="bg-white dark:bg-[#161618] p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08]">
-                          <span className="text-[#86868b]">Fuel Required</span>
-                          <p className="mt-1 font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">{route.fuel_used_liters} Litres</p>
-                        </div>
-                      </div>
-
                       {/* Stops sequence */}
                       {Array.isArray(route.stops) && route.stops.length > 0 && (
                         <div>
@@ -562,13 +795,8 @@ export default function Optimization() {
                           <div className="flex flex-wrap items-center gap-2">
                             {route.stops.map((stop, sIdx) => (
                               <div key={sIdx} className="flex items-center gap-1.5 text-xs">
-                                <span className={`px-3 py-1.5 rounded-xl border font-medium ${
-                                  stop.type === "depot"
-                                    ? "bg-black/[0.05] border-black/[0.08] text-[#1d1d1f] dark:bg-white/[0.08] dark:border-white/[0.1] dark:text-[#f5f5f7]"
-                                    : "bg-white border-black/[0.08] text-[#1d1d1f] dark:bg-[#161618] dark:border-white/[0.08] dark:text-[#f5f5f7]"
-                                }`}>
+                                <span className="px-3 py-1.5 rounded-xl border font-medium bg-white border-black/[0.08] text-[#1d1d1f] dark:bg-[#161618] dark:border-white/[0.08] dark:text-[#f5f5f7]">
                                   {stop.name || stop.location || `Stop #${sIdx + 1}`}
-                                  {stop.weight_kg ? ` (${stop.weight_kg}kg)` : ""}
                                 </span>
                                 {sIdx < route.stops.length - 1 && (
                                   <ArrowRight size={13} className="text-[#34c759] dark:text-[#30d158] shrink-0" />
@@ -584,119 +812,50 @@ export default function Optimization() {
               </div>
             )}
 
-            {/* Unassigned orders */}
-            {Array.isArray(result.data?.unassigned_orders) && result.data.unassigned_orders.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#ff9500] dark:text-[#ff9f0a] mb-3 flex items-center gap-2">
-                  <AlertTriangle size={15} />
-                  Unassigned Consignments ({result.data.unassigned_orders.length})
-                </h3>
-                <div className="divide-y divide-black/[0.04] rounded-2xl border border-black/[0.06] bg-black/[0.015] p-2 dark:divide-white/[0.06] dark:border-white/[0.06] dark:bg-white/[0.02]">
-                  {result.data.unassigned_orders.map((u, idx) => (
-                    <div key={idx} className="p-3 text-xs flex justify-between items-center">
-                      <div>
-                        <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">Order #{u.order_id}</span>
-                        {u.pickup_location && (
-                          <span className="text-[#86868b] ml-2">({u.pickup_location} → {u.delivery_location})</span>
-                        )}
-                      </div>
-                      <span className="text-[#ff9500] dark:text-[#ff9f0a] italic max-w-md text-right">
-                        {u.reason || "Exceeds vehicle capacity or driver constraints"}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Raw JSON toggle */}
+            {/* Raw JSON inspection */}
             {showRawJson && (
-              <pre className="max-h-96 overflow-auto rounded-2xl bg-[#000000] p-5 text-xs text-[#30d158] border border-white/[0.1]">
+              <pre className="rounded-2xl border border-black/[0.08] bg-[#0c1017] p-5 text-xs text-[#34c759] font-mono overflow-x-auto dark:border-white/[0.08]">
                 {JSON.stringify(result.data, null, 2)}
               </pre>
             )}
           </div>
-        </section>
+        </div>
       )}
 
-      {/* Reset Demo Fleet Confirmation Modal */}
+      {/* Reset Demo Modal */}
       {showResetModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="apple-card w-full max-w-lg p-7 border border-black/10 shadow-2xl dark:border-white/10">
-            <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-red-500/10 text-red-600 dark:bg-red-500/15 dark:text-red-400">
-                <AlertTriangle size={20} />
-              </div>
-              <div>
-                <h3 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                  Reset Demo Fleet Data
-                </h3>
-                <p className="text-xs text-[#86868b]">
-                  Purge operational records and seed realistic Indian logistics data
-                </p>
-              </div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <div className="apple-card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-bold text-[#1d1d1f] dark:text-[#f5f5f7]">
+              Reset Demo Fleet
+            </h3>
+            <p className="text-xs text-[#6e6e73] dark:text-[#86868b]">
+              This will safely back up your current state and reseed realistic Indian hubs, trucks with mileage counters, drivers with varied wellness scores, and consignments.
+            </p>
+            <div>
+              <label className="text-xs font-medium text-[#6e6e73] dark:text-[#86868b] block mb-1">
+                Random Seed (Determinism)
+              </label>
+              <input
+                type="number"
+                value={seedVal}
+                onChange={(e) => setSeedVal(Number(e.target.value))}
+                className="apple-input text-xs"
+              />
             </div>
-
-            <div className="mt-5 space-y-3 text-xs leading-relaxed text-[#6e6e73] dark:text-[#86868b]">
-              <p>
-                This operation will safely delete trips, GPS tracking, and consignments in foreign-key safe order. 
-                <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]"> User accounts, authentication, and org settings are strictly preserved.</strong>
-              </p>
-              <div className="rounded-xl bg-black/[0.03] p-3 dark:bg-white/[0.04]">
-                <span className="font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
-                  What will be seeded:
-                </span>
-                <ul className="list-disc pl-4 space-y-0.5">
-                  <li>12 verified Indian hubs (Gwalior, Delhi, Mumbai, Jaipur, Bhopal, Indore...)</li>
-                  <li>16 trucks with valid Indian plates (11 available, 3 in transit, 2 in maintenance)</li>
-                  <li>20 licensed drivers with mobile numbers and HGV credentials</li>
-                  <li>30 routable consignments with OSRM road distances, deadlines &amp; handling tags</li>
-                  <li>In-progress &amp; completed trips for live GPS Tracking and Recorded Trips</li>
-                </ul>
-              </div>
-              <p className="text-[11px] text-[#86868b]">
-                An automated backup of the current database has been generated in <code className="px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 font-mono">backend/backups/</code> before executing.
-              </p>
-
-              <div>
-                <label className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7] block mb-1">
-                  Random Seed (for deterministic reproducibility)
-                </label>
-                <input
-                  type="number"
-                  value={seedVal}
-                  onChange={(e) => setSeedVal(Number(e.target.value))}
-                  className="apple-input text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="flex justify-end gap-2 pt-2">
               <button
-                type="button"
-                disabled={resettingDemo}
                 onClick={() => setShowResetModal(false)}
                 className="apple-btn-secondary text-xs"
               >
                 Cancel
               </button>
               <button
-                type="button"
-                disabled={resettingDemo}
                 onClick={handleResetDemoFleet}
-                className="apple-btn-primary bg-red-600 hover:bg-red-700 text-white text-xs font-semibold"
+                disabled={resettingDemo}
+                className="apple-btn-primary text-xs"
               >
-                {resettingDemo ? (
-                  <>
-                    <LoaderCircle size={14} className="animate-spin" />
-                    Resetting &amp; Seeding Demo...
-                  </>
-                ) : (
-                  <>
-                    <RotateCcw size={14} />
-                    Confirm Reset Fleet
-                  </>
-                )}
+                {resettingDemo ? "Seeding..." : "Confirm & Reseed"}
               </button>
             </div>
           </div>

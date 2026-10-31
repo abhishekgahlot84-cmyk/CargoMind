@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, date, timezone
+from typing import List, Optional, Dict, Any
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.optimization.road_route import get_road_route
@@ -534,7 +536,7 @@ def calculate_fleet_route(
             "status": "no_orders",
             "solver_status": "NO_ORDERS",
             "solver_backend": "OR-Tools VRP",
-            "message": "No pending orders found for fleet routing.",
+            "message": "No pending consignments found for fleet routing.",
             "routes": [],
             "unassigned_orders": [],
             "diagnostic": order_diag,
@@ -543,8 +545,12 @@ def calculate_fleet_route(
     # Keep only trucks that have an available driver from the same company
     compatible_trucks = [
         truck for truck in trucks
-        if any(getattr(driver, "company_id", None) == getattr(truck, "company_id", None) for driver in drivers)
+        if any(driver.company_id == truck.company_id for driver in drivers)
     ]
+
+    if not compatible_trucks:
+        # Fallback: ignore company constraint if single workspace
+        compatible_trucks = trucks
 
     if not compatible_trucks:
         return {
@@ -686,9 +692,8 @@ def calculate_fleet_route(
 
         total_weight = sum(o.weight or 0 for o in route_orders)
 
-        fuel_eff = getattr(truck, "fuel_efficiency", None)
-        if fuel_eff and fuel_eff > 0:
-            fuel_used_liters = total_distance / fuel_eff
+        if truck.fuel_efficiency and truck.fuel_efficiency > 0:
+            fuel_used_liters = total_distance / truck.fuel_efficiency
             fuel_cost = fuel_used_liters * fuel_price
         else:
             fuel_used_liters = 0
@@ -704,15 +709,14 @@ def calculate_fleet_route(
             }
         ]
         for o in route_orders:
-            delivery_loc = getattr(o, "delivery_location", None) or f"Order #{getattr(o, 'id', '')} Destination"
             stops.append({
-                "name": delivery_loc,
-                "location": delivery_loc,
-                "lat": float(o.delivery_latitude) if getattr(o, "delivery_latitude", None) else None,
-                "lon": float(o.delivery_longitude) if getattr(o, "delivery_longitude", None) else None,
+                "name": o.delivery_location or f"Order #{o.id} Destination",
+                "location": o.delivery_location or f"Order #{o.id} Destination",
+                "lat": float(o.delivery_latitude) if o.delivery_latitude else None,
+                "lon": float(o.delivery_longitude) if o.delivery_longitude else None,
                 "type": "delivery",
-                "order_id": getattr(o, "id", None),
-                "weight_kg": getattr(o, "weight", 0),
+                "order_id": o.id,
+                "weight_kg": o.weight,
                 "cargo_category": getattr(o, "cargo_category", "General Cargo"),
                 "urgency": getattr(o, "urgency", "normal"),
             })
@@ -725,11 +729,11 @@ def calculate_fleet_route(
         })
 
         routes.append({
-            "truck_id": getattr(truck, "id", None),
-            "truck_registration": getattr(truck, "registration_number", f"Truck #{getattr(truck, 'id', '')}"),
-            "truck_capacity": getattr(truck, "capacity", 0),
-            "driver_id": getattr(driver, "id", None),
-            "driver_name": getattr(driver, "name", f"Driver #{getattr(driver, 'id', '')}"),
+            "truck_id": truck.id,
+            "truck_registration": truck.registration_number,
+            "truck_capacity": truck.capacity,
+            "driver_id": driver.id,
+            "driver_name": driver.name,
             "route": route_data["route"],
             "order_ids": route_order_ids,
             "order_count": len(route_order_ids),
@@ -743,11 +747,11 @@ def calculate_fleet_route(
             "stops": stops,
             "orders": [
                 {
-                    "order_id": getattr(o, "id", None),
-                    "pickup_location": getattr(o, "pickup_location", "Depot"),
-                    "delivery_location": getattr(o, "delivery_location", "Destination"),
-                    "weight": getattr(o, "weight", 0),
-                    "distance_km": getattr(o, "distance_km", 0),
+                    "order_id": o.id,
+                    "pickup_location": o.pickup_location,
+                    "delivery_location": o.delivery_location,
+                    "weight": o.weight,
+                    "distance_km": o.distance_km,
                     "urgency": getattr(o, "urgency", "normal"),
                     "cargo_category": getattr(o, "cargo_category", "General Cargo"),
                 }
@@ -785,35 +789,34 @@ def calculate_fleet_route(
                 if existing_trip:
                     continue
 
-                order_distance = getattr(order, "distance_km", 0) or 0
+                order_distance = order.distance_km or 0
                 planned_route_data = None
 
-                p_lat = getattr(order, "pickup_latitude", None)
-                p_lon = getattr(order, "pickup_longitude", None)
-                d_lat = getattr(order, "delivery_latitude", None)
-                d_lon = getattr(order, "delivery_longitude", None)
-
-                if p_lat and p_lon and d_lat and d_lon:
+                if order.pickup_latitude and order.pickup_longitude and order.delivery_latitude and order.delivery_longitude:
                     try:
                         planned_route_data = get_road_route(
-                            float(p_lat), float(p_lon), float(d_lat), float(d_lon)
+                            float(order.pickup_latitude),
+                            float(order.pickup_longitude),
+                            float(order.delivery_latitude),
+                            float(order.delivery_longitude)
                         )
                     except Exception:
                         try:
                             planned_route_data = get_road_route(
-                                DEPOT_LATITUDE, DEPOT_LONGITUDE, float(d_lat), float(d_lon)
+                                DEPOT_LATITUDE, DEPOT_LONGITUDE,
+                                float(order.delivery_latitude),
+                                float(order.delivery_longitude)
                             )
                         except Exception:
                             planned_route_data = None
 
-                truck_fuel = getattr(truck, "fuel_efficiency", None)
                 trip = Trip(
-                    truck_id=getattr(truck, "id", None),
-                    driver_id=getattr(driver, "id", None),
-                    order_id=getattr(order, "id", None),
+                    truck_id=truck.id,
+                    driver_id=driver.id,
+                    order_id=order.id,
                     distance=order_distance,
                     estimated_time=int(order_distance / average_speed_kmh * 60),
-                    fuel_cost=int(order_distance / truck_fuel * fuel_price) if truck_fuel and truck_fuel > 0 else 0,
+                    fuel_cost=int(order_distance / truck.fuel_efficiency * fuel_price) if truck.fuel_efficiency and truck.fuel_efficiency > 0 else 0,
                     status="planned",
                     planned_route=planned_route_data,
                     start_time=datetime.now(timezone.utc).isoformat(),
@@ -998,3 +1001,135 @@ def reset_demo_fleet_endpoint(
         create_backup=create_backup
     )
     return result
+
+
+class RouteAlternativesRequest(BaseModel):
+    trip_id: Optional[int] = None
+    origin_lat: Optional[float] = None
+    origin_lon: Optional[float] = None
+    dest_lat: Optional[float] = None
+    dest_lon: Optional[float] = None
+    truck_id: Optional[int] = None
+    start_time: Optional[str] = None
+    diesel_price: Optional[float] = 90.0
+
+
+class ConfirmRouteRequest(BaseModel):
+    trip_id: int
+    route_tag: str
+    distance_km: float
+    estimated_time_minutes: float
+    fuel_cost: float
+    coordinates: List[List[float]]
+    toll_info: Optional[str] = None
+    saving_note: Optional[str] = None
+    ai_reason: Optional[str] = None
+
+
+@router.post("/route-alternatives")
+def get_route_alternatives_endpoint(
+    req: RouteAlternativesRequest,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Compute 3 real-world route options (Fastest, AI Recommended, Safest)
+    using server-side highway engines, diesel pricing, and truck mileage.
+    """
+    from app.optimization.route_alternatives import compute_route_options
+
+    origin_lat = req.origin_lat
+    origin_lon = req.origin_lon
+    dest_lat = req.dest_lat
+    dest_lon = req.dest_lon
+    truck_id = req.truck_id
+    start_time = req.start_time
+
+    # If trip_id provided, fetch coordinates and truck from trip
+    if req.trip_id:
+        trip = db.query(Trip).filter(Trip.id == req.trip_id).first()
+        if not trip:
+            raise HTTPException(status_code=404, detail="Trip not found")
+
+        truck_id = trip.truck_id
+        start_time = trip.start_time or start_time
+
+        if trip.order:
+            try:
+                origin_lat = float(trip.order.pickup_latitude)
+                origin_lon = float(trip.order.pickup_longitude)
+                dest_lat = float(trip.order.delivery_latitude)
+                dest_lon = float(trip.order.delivery_longitude)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Trip order has invalid coordinates.")
+
+    if origin_lat is None or origin_lon is None or dest_lat is None or dest_lon is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Valid origin and destination coordinates must be provided either directly or via trip_id."
+        )
+
+    truck = None
+    if truck_id:
+        truck = db.query(Truck).filter(Truck.id == truck_id).first()
+
+    try:
+        result = compute_route_options(
+            origin_lat=origin_lat,
+            origin_lon=origin_lon,
+            dest_lat=dest_lat,
+            dest_lon=dest_lon,
+            truck=truck,
+            start_time=start_time,
+            diesel_price=req.diesel_price or 90.0,
+        )
+        return result
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Routing service failure: {str(exc)}")
+
+
+@router.post("/confirm-route")
+def confirm_route_endpoint(
+    req: ConfirmRouteRequest,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Persist the selected route alternative to the Trip record.
+    """
+    trip = db.query(Trip).filter(Trip.id == req.trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail=f"Trip #{req.trip_id} not found")
+
+    trip.distance = int(round(req.distance_km))
+    trip.estimated_time = int(round(req.estimated_time_minutes))
+    trip.fuel_cost = int(round(req.fuel_cost))
+    trip.planned_route = {
+        "distance_km": req.distance_km,
+        "duration_minutes": req.estimated_time_minutes,
+        "coordinates": req.coordinates,
+        "route_tag": req.route_tag,
+        "toll_info": req.toll_info or "Toll data unavailable",
+        "saving_note": req.saving_note,
+        "ai_reason": req.ai_reason,
+        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        db.commit()
+        db.refresh(trip)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update trip route: {str(e)}")
+
+    return {
+        "status": "success",
+        "message": f"Route option '{req.route_tag}' confirmed and persisted to Trip #{trip.id}.",
+        "trip_id": trip.id,
+        "distance_km": trip.distance,
+        "estimated_time_minutes": trip.estimated_time,
+        "fuel_cost": trip.fuel_cost,
+    }
+
