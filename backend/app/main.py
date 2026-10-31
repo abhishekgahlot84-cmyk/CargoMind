@@ -1,11 +1,9 @@
-import asyncio
 from fastapi import FastAPI
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database.connection import engine, Base, SessionLocal
+from app.database.connection import engine, Base
 from app.database import models
-from app.optimization.trip_cleanup import cleanup_completed_trips
 from app.routes import (
     auth,
     companies,
@@ -39,14 +37,6 @@ app.add_middleware(
 
 # Create database tables (adds new columns via SQLAlchemy for SQLite)
 Base.metadata.create_all(bind=engine)
-
-# Ensure completed_at column exists in trips table
-try:
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE trips ADD COLUMN completed_at VARCHAR(50)"))
-        conn.commit()
-except Exception:
-    pass
 
 # Ensure default company exists (prevents foreign key errors when adding truck/driver)
 try:
@@ -97,22 +87,3 @@ def test_database():
             "message": "Database connection failed",
             "error": str(e)
         }
-
-
-async def periodic_trip_cleanup_worker():
-    """Runs every 60 seconds to purge completed trips older than 1 hour."""
-    while True:
-        try:
-            db = SessionLocal()
-            try:
-                cleanup_completed_trips(db, max_age_hours=1.0)
-            finally:
-                db.close()
-        except Exception as exc:
-            print("Background cleanup error:", exc)
-        await asyncio.sleep(60)
-
-
-@app.on_event("startup")
-async def start_periodic_cleanup():
-    asyncio.create_task(periodic_trip_cleanup_worker())

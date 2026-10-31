@@ -50,6 +50,12 @@ class Truck(Base):
     year = Column(Integer)
     notes = Column(Text)
 
+    # Maintenance tracking
+    mileage_kmpl = Column(Float, default=10.0)  # km per litre for fuel cost calc
+    trips_since_service = Column(Integer, default=0)
+    km_since_service = Column(Float, default=0.0)
+    last_service_date = Column(String(50))
+
     company_id = Column(Integer, ForeignKey("companies.id"))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -60,6 +66,7 @@ class Truck(Base):
         "Maintenance",
         back_populates="truck"
     )
+    maintenance_log = relationship("MaintenanceLog", back_populates="truck", cascade="all, delete-orphan")
     gps_records = relationship(
         "GPSTracking",
         back_populates="truck"
@@ -81,12 +88,21 @@ class Driver(Base):
     license_number = Column(String(50))
     notes = Column(Text)
 
+    # Wellness tracking
+    wellness_score = Column(Integer, default=85)
+    last_rest_start = Column(String(50))  # ISO datetime
+    hours_driven_24h = Column(Float, default=0.0)
+    hours_driven_7d = Column(Float, default=0.0)
+    night_driving_hours = Column(Float, default=0.0)
+    consecutive_working_days = Column(Integer, default=0)
+
     company_id = Column(Integer, ForeignKey("companies.id"))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     company = relationship("Company", back_populates="drivers")
     user = relationship("User")
     trips = relationship("Trip", back_populates="driver")
+    wellness_history = relationship("WellnessHistory", back_populates="driver", cascade="all, delete-orphan")
 
     trip_assignments = relationship(
         "TripDriverAssignment",
@@ -201,7 +217,6 @@ class Trip(Base):
     daily_schedule = Column(JSON, nullable=True)
     planned_route = Column(JSON, nullable=True)
     start_time = Column(String(50), nullable=True)
-    completed_at = Column(String(50), nullable=True)
     average_speed_kmph = Column(Float, default=45.0)
 
     driver_assignments = relationship(
@@ -368,3 +383,32 @@ class Location(Base):
     hub_type = Column(String(50), default="City")
     aliases = Column(JSON)  # list of strings: ["gwl", "gwalior"]
     place_id = Column(String(255), nullable=True)
+
+
+class WellnessHistory(Base):
+    __tablename__ = "wellness_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    driver_id = Column(Integer, ForeignKey("drivers.id"), nullable=False)
+    score = Column(Integer, nullable=False)
+    band = Column(String(20))  # good, fair, needs_rest
+    computed_at = Column(String(50), nullable=False)
+    breakdown = Column(JSON)  # detailed scoring breakdown
+
+    driver = relationship("Driver", back_populates="wellness_history")
+
+
+class MaintenanceLog(Base):
+    __tablename__ = "maintenance_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    truck_id = Column(Integer, ForeignKey("trucks.id"), nullable=False)
+    action = Column(String(50), nullable=False)  # "sent_to_maintenance", "marked_maintained"
+    date = Column(String(50), nullable=False)
+    maintenance_type = Column(String(100))
+    notes = Column(Text)
+    cost = Column(Float)
+    trips_at_time = Column(Integer)
+    km_at_time = Column(Float)
+
+    truck = relationship("Truck", back_populates="maintenance_log")

@@ -36,12 +36,22 @@ def run_migration():
     add_column_if_missing(cursor, "trucks", "model", "VARCHAR(100)")
     add_column_if_missing(cursor, "trucks", "year", "INTEGER")
     add_column_if_missing(cursor, "trucks", "notes", "TEXT")
+    add_column_if_missing(cursor, "trucks", "mileage_kmpl", "REAL", default="10.0")
+    add_column_if_missing(cursor, "trucks", "trips_since_service", "INTEGER", default="0")
+    add_column_if_missing(cursor, "trucks", "km_since_service", "REAL", default="0.0")
+    add_column_if_missing(cursor, "trucks", "last_service_date", "VARCHAR(50)")
 
     # ---- drivers ----
     print("\n[drivers]")
     add_column_if_missing(cursor, "drivers", "phone", "VARCHAR(20)")
     add_column_if_missing(cursor, "drivers", "license_number", "VARCHAR(50)")
     add_column_if_missing(cursor, "drivers", "notes", "TEXT")
+    add_column_if_missing(cursor, "drivers", "wellness_score", "INTEGER", default="85")
+    add_column_if_missing(cursor, "drivers", "last_rest_start", "VARCHAR(50)")
+    add_column_if_missing(cursor, "drivers", "hours_driven_24h", "REAL", default="0.0")
+    add_column_if_missing(cursor, "drivers", "hours_driven_7d", "REAL", default="0.0")
+    add_column_if_missing(cursor, "drivers", "night_driving_hours", "REAL", default="0.0")
+    add_column_if_missing(cursor, "drivers", "consecutive_working_days", "INTEGER", default="0")
 
     # ---- orders ----
     print("\n[orders]")
@@ -93,9 +103,11 @@ def run_migration():
             contact_name VARCHAR(100),
             contact_phone VARCHAR(20),
             notes TEXT,
-            company_id INTEGER REFERENCES companies(id)
+            company_id INTEGER REFERENCES companies(id),
+            user_id INTEGER REFERENCES users(id)
         )
     """)
+    add_column_if_missing(cursor, "hubs", "user_id", "INTEGER")
     print("  hubs table ready")
 
     # ---- driver_handovers (create if not exists) ----
@@ -116,6 +128,37 @@ def run_migration():
         )
     """)
     print("  driver_handovers table ready")
+
+    # ---- wellness_history (create if not exists) ----
+    print("\n[wellness_history]")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS wellness_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            driver_id INTEGER NOT NULL REFERENCES drivers(id),
+            score INTEGER NOT NULL,
+            band VARCHAR(20),
+            computed_at VARCHAR(50) NOT NULL,
+            breakdown JSON
+        )
+    """)
+    print("  wellness_history table ready")
+
+    # ---- maintenance_log (create if not exists) ----
+    print("\n[maintenance_log]")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            truck_id INTEGER NOT NULL REFERENCES trucks(id),
+            action VARCHAR(50) NOT NULL,
+            date VARCHAR(50) NOT NULL,
+            maintenance_type VARCHAR(100),
+            notes TEXT,
+            cost REAL,
+            trips_at_time INTEGER,
+            km_at_time REAL
+        )
+    """)
+    print("  maintenance_log table ready")
 
     conn.commit()
     conn.close()

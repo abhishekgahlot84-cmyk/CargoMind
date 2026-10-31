@@ -24,9 +24,12 @@ from app.database.models import (
     TripDriverAssignment,
     Company,
     User,
+    WellnessHistory,
+    MaintenanceLog,
 )
 from app.optimization.distance_service import compute_route_distance
 from app.optimization.road_route import get_road_route
+from app.optimization.wellness import compute_driver_wellness
 
 
 INDIAN_HUBS = [
@@ -42,6 +45,13 @@ INDIAN_HUBS = [
     {"name": "Ahmedabad Western Gateway", "city": "Ahmedabad", "state": "Gujarat", "lat": 23.0225, "lon": 72.5714, "type": "regional_hub", "cap": 220000},
     {"name": "Chandigarh Tricity Logistics Yard", "city": "Chandigarh", "state": "Chandigarh", "lat": 30.7333, "lon": 76.7794, "type": "distribution_center", "cap": 75000},
     {"name": "Nagpur Zero-Mile Transshipment Center", "city": "Nagpur", "state": "Maharashtra", "lat": 21.1458, "lon": 79.0882, "type": "transit_hub", "cap": 160000},
+    # Additional corridor handover hubs for Delhi-Mumbai, Visakhapatnam-Delhi, Gwalior-Bhopal
+    {"name": "Udaipur Highway Logistics Hub", "city": "Udaipur", "state": "Rajasthan", "lat": 24.5854, "lon": 73.7125, "type": "handover_hub", "cap": 95000},
+    {"name": "Vadodara Industrial Corridor Hub", "city": "Vadodara", "state": "Gujarat", "lat": 22.3072, "lon": 73.1812, "type": "handover_hub", "cap": 130000},
+    {"name": "Surat Express Gateway Hub", "city": "Surat", "state": "Gujarat", "lat": 21.1702, "lon": 72.8311, "type": "handover_hub", "cap": 145000},
+    {"name": "Visakhapatnam Coastal Freight Terminal", "city": "Visakhapatnam", "state": "Andhra Pradesh", "lat": 17.6868, "lon": 83.2185, "type": "regional_hub", "cap": 280000},
+    {"name": "Raipur Eastern Transit Hub", "city": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "type": "handover_hub", "cap": 115000},
+    {"name": "Hyderabad Deccan Logistics Terminal", "city": "Hyderabad", "state": "Telangana", "lat": 17.3850, "lon": 78.4867, "type": "regional_hub", "cap": 220000},
 ]
 
 TRUCK_SPECS = [
@@ -148,6 +158,8 @@ def reset_and_seed_demo_fleet(
 
     # 1. Delete in FK-safe reverse dependency order
     # (Do not touch User, Company)
+    db.query(WellnessHistory).delete()
+    db.query(MaintenanceLog).delete()
     db.query(TripDriverAssignment).delete()
     db.query(GPSTracking).delete()
     db.query(Trip).delete()
@@ -193,15 +205,47 @@ def reset_and_seed_demo_fleet(
     db.commit()
 
     # 3. Seed Trucks
+    # Varied trips_since_service to demonstrate:
+    # >= 30: due (critical)
+    # 20 - 29: warning (recommended)
+    # < 20: good condition
+    trip_counts_pattern = [
+        24,  # Truck 0: 24 trips -> Warning (matches reference requirement!)
+        33,  # Truck 1: 33 trips -> Due for service
+        12,  # Truck 2: 12 trips -> Good
+        28,  # Truck 3: 28 trips -> Warning
+        31,  # Truck 4: 31 trips -> Due for service
+        8,   # Truck 5: 8 trips -> Good
+        19,  # Truck 6: 19 trips -> Good
+        25,  # Truck 7: 25 trips -> Warning
+        6,   # Truck 8: 6 trips -> Good
+        14,  # Truck 9: 14 trips -> Good
+        35,  # Truck 10: 35 trips -> Due for service
+        22,  # Truck 11: 22 trips -> Warning
+        7,   # Truck 12: 7 trips -> Good
+        16,  # Truck 13: 16 trips -> Good
+        30,  # Truck 14: 30 trips -> Due (maintenance)
+        34,  # Truck 15: 34 trips -> Due (maintenance)
+    ]
+
     trucks = []
-    for spec in TRUCK_SPECS:
+    for idx, spec in enumerate(TRUCK_SPECS):
         plate, model, cap_kg, vol_m3, eff, fuel, st = spec
+        trips_count = trip_counts_pattern[idx % len(trip_counts_pattern)]
+        km_count = round(trips_count * rnd.uniform(280.0, 490.0), 1)
+        last_svc_days = rnd.randint(25, 120)
+        last_svc_date = (now - timedelta(days=last_svc_days)).strftime("%Y-%m-%d")
+
         truck = Truck(
             registration_number=plate,
             model=model,
             capacity=cap_kg,
             volume_capacity=vol_m3,
-            fuel_efficiency=eff,
+            fuel_efficiency=int(eff),
+            mileage_kmpl=float(eff),
+            trips_since_service=trips_count,
+            km_since_service=km_count,
+            last_service_date=last_svc_date,
             fuel_type=fuel,
             status=st,
             company_id=company_id,
@@ -214,25 +258,74 @@ def reset_and_seed_demo_fleet(
         trucks.append(truck)
     db.commit()
 
-    # 4. Seed Drivers
+    # 4. Seed Drivers with varied, realistic wellness profiles
+    # Distribution:
+    # First 8 drivers: Well-rested (Wellness >= 80, "good")
+    # Next 7 drivers: Moderate fatigue (Wellness 60-79, "fair")
+    # Last 5 drivers: High fatigue / Insufficient rest (Wellness < 60, "needs_rest" - not assignable)
     drivers = []
     for i, d_spec in enumerate(DRIVER_NAMES):
         name, phone, lic = d_spec
-        # Driver status matches paired truck if in_trip, otherwise available
         paired_truck = trucks[i] if i < len(trucks) else None
         driver_status = "busy" if paired_truck and paired_truck.status == "in_trip" else "available"
+
+        if i < 8:
+            # Good wellness
+            h24 = round(rnd.uniform(0.5, 3.5), 1)
+            h7d = round(rnd.uniform(14.0, 28.0), 1)
+            night_h = round(rnd.uniform(0.0, 1.0), 1)
+            rest_h = round(rnd.uniform(9.0, 16.0), 1)
+            consec = rnd.randint(1, 3)
+            last_rest_dt = now - timedelta(hours=rest_h)
+        elif i < 15:
+            # Fair wellness
+            h24 = round(rnd.uniform(4.5, 6.5), 1)
+            h7d = round(rnd.uniform(30.0, 40.0), 1)
+            night_h = round(rnd.uniform(1.5, 2.5), 1)
+            rest_h = round(rnd.uniform(8.0, 10.0), 1)
+            consec = rnd.randint(3, 4)
+            last_rest_dt = now - timedelta(hours=rest_h)
+        else:
+            # Needs rest (< 60)
+            h24 = round(rnd.uniform(7.5, 9.5), 1)
+            h7d = round(rnd.uniform(44.0, 52.0), 1)
+            night_h = round(rnd.uniform(3.5, 5.0), 1)
+            rest_h = round(rnd.uniform(3.0, 6.5), 1)  # < 8h rest!
+            consec = rnd.randint(5, 7)
+            last_rest_dt = now - timedelta(hours=rest_h)
+
         driver = Driver(
             name=name,
             phone=phone,
             license_number=f"IN-DL-{1000 + i}",
             license_category=lic,
             status=driver_status,
-            working_hours=rnd.randint(35, 55),
+            working_hours=int(h7d),
+            rest_hours=int(rest_h),
+            hours_driven_24h=h24,
+            hours_driven_7d=h7d,
+            night_driving_hours=night_h,
+            consecutive_working_days=consec,
+            last_rest_start=last_rest_dt.isoformat(),
             company_id=company_id,
             notes="[DEMO] Commercial freight operator with GPS compliance",
         )
         db.add(driver)
         drivers.append(driver)
+    db.commit()
+
+    # Compute and persist real wellness score for each driver
+    for d in drivers:
+        w_res = compute_driver_wellness(d, db=db)
+        d.wellness_score = w_res["score"]
+        wh = WellnessHistory(
+            driver_id=d.id,
+            score=w_res["score"],
+            band=w_res["band"],
+            computed_at=now.isoformat(),
+            breakdown=w_res["breakdown"]
+        )
+        db.add(wh)
     db.commit()
 
     # 5. Seed Consignments (Orders)

@@ -1,85 +1,55 @@
-# Python & Bytecode
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.pyo
 
-# Virtual Environments
+# Virtual environment
 venv/
 .venv/
 env/
 ENV/
-env.bak/
-venv.bak/
 
-# Environment Variables & Secrets
+# Environment variables
 .env
 .env.*
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 !.env.example
 
-# Build Artifacts & Distribution
-dist/
-build/
+# Jupyter
+.ipynb_checkpoints/
+
+# Node / React
+node_modules/
 frontend/dist/
 frontend/build/
-*.egg-info/
-*.egg
 
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
+# VS Code
+.vscode/
 
-# Local Databases & Backups
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Machine Learning
+*.pkl
+*.joblib
+*.model
+
+# Databases
 *.db
-*.db-journal
 *.sqlite
 *.sqlite3
 fleet_local.db
 backend/fleet_local.db
-backend/backups/
 backups/
-
-# Uploads & Temporary Scratch Files
-uploads/
-*/uploads/
-backend/scratch/
+backend/backups/
 scratch/
+backend/scratch/
 
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Testing & Coverage
-.pytest_cache/
-.coverage
-htmlcov/
-coverage/
-
-# IDE & Editor Config
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS Generated Files
+# OS files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 desktop.ini
-
-# Machine Learning Artifacts
-*.pkl
-*.joblib
-*.model
-.ipynb_checkpoints/

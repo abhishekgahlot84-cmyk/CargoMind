@@ -1,5 +1,4 @@
-import React from "react";
-import { Gauge, Radio, Coffee, CheckCircle2, Clock, AlertTriangle } from "lucide-react";
+import { Gauge, Radio, Coffee, CheckCircle2, Clock } from "lucide-react";
 
 /**
  * High-precision SVG Speedometer Gauge for CargoMind.
