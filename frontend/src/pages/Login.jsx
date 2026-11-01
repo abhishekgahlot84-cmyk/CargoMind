@@ -67,9 +67,19 @@ export default function Login() {
       navigate(redirectPath, { replace: true });
     } catch (err) {
       console.error("Google auth error:", err);
-      setError(
-        err.response?.data?.detail || "Google verification failed on backend."
-      );
+      if (err.isConfigError) {
+        setError(err.message);
+      } else if (err.response) {
+        setError(
+          err.response.data?.detail || "Google verification failed on backend."
+        );
+      } else if (err.code === "ERR_NETWORK" || err.message?.includes("Network Error")) {
+        setError(
+          "Unable to connect to the CargoMind backend server for Google verification. Please verify network and CORS settings."
+        );
+      } else {
+        setError(err.message || "Google verification failed. Could not communicate with server.");
+      }
     } finally {
       setGoogleLoading(false);
     }
@@ -124,9 +134,31 @@ export default function Login() {
       navigate(redirectPath, { replace: true });
     } catch (err) {
       console.error("Auth error:", err);
-      setError(
-        err.response?.data?.detail || "Authentication failed. Please check your credentials and try again."
-      );
+      if (err.isConfigError) {
+        setError(err.message);
+      } else if (err.response) {
+        if (err.response.status === 401) {
+          setError(
+            err.response.data?.detail || "Invalid email or password. Please verify your credentials and try again."
+          );
+        } else if (err.response.status === 400) {
+          setError(
+            err.response.data?.detail || "Bad request. Please verify your submitted information."
+          );
+        } else {
+          setError(
+            err.response.data?.detail || `Server error (${err.response.status}). Please try again later.`
+          );
+        }
+      } else if (err.code === "ERR_NETWORK" || err.message?.includes("Network Error")) {
+        setError(
+          "Unable to connect to the CargoMind backend server. Please verify your network connection and CORS settings."
+        );
+      } else {
+        setError(
+          err.message || "Authentication failed. Could not communicate with the backend server."
+        );
+      }
     } finally {
       setLoading(false);
     }
