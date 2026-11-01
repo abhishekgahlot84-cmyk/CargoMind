@@ -72,7 +72,7 @@ app.add_middleware(
 # Create database tables (adds new columns via SQLAlchemy for SQLite)
 Base.metadata.create_all(bind=engine)
 
-# Ensure default company exists (prevents foreign key errors when adding truck/driver)
+# Ensure default company exists and schema columns are synchronized
 try:
     with engine.connect() as conn:
         result = conn.execute(text("SELECT id FROM companies WHERE id = 1")).first()
@@ -84,6 +84,19 @@ try:
                 except Exception:
                     pass
             conn.commit()
+
+        # Safe schema synchronization for driver rest tracking
+        try:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS rest_until VARCHAR(50);"))
+                conn.commit()
+            elif engine.dialect.name == "sqlite":
+                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(drivers);")).fetchall()]
+                if "rest_until" not in cols:
+                    conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
+                    conn.commit()
+        except Exception:
+            pass
 except Exception as e:
     print("Default company seeding notice:", e)
 

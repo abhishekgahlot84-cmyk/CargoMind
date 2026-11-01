@@ -35,7 +35,7 @@ export default function Login() {
   });
   const [name, setName] = useState("");
   const [email, setEmail] = useState("admin@cargomind.ai");
-  const [password, setPassword] = useState("admin");
+  const [password, setPassword] = useState("Abhishek_93");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleBtnRendered, setGoogleBtnRendered] = useState(false);
@@ -212,11 +212,10 @@ export default function Login() {
                 setIsSignUp(false);
                 setError("");
               }}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                !isSignUp
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${!isSignUp
                   ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
                   : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
-              }`}
+                }`}
             >
               Sign In
             </button>
@@ -226,11 +225,10 @@ export default function Login() {
                 setIsSignUp(true);
                 setError("");
               }}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                isSignUp
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${isSignUp
                   ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
                   : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
-              }`}
+                }`}
             >
               Sign Up
             </button>

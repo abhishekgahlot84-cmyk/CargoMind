@@ -1,7 +1,8 @@
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.database.connection import get_db
 from app.database.models import Order, Trip, CARGO_CATEGORIES, User
@@ -280,7 +281,7 @@ def create_order(
     delivery_location: str,
     weight: int,
     deadline: str,
-    distance_km: int = 0,
+    distance_km: float = 0.0,
     pickup_latitude: str = None,
     pickup_longitude: str = None,
     pickup_place_id: str = None,
@@ -392,7 +393,7 @@ def create_order(
         delivery_location=delivery_location,
         weight=weight,
         deadline=deadline,
-        distance_km=int(resolved_dist),
+        distance_km=round(float(resolved_dist), 2),
         pickup_latitude=pickup_latitude,
         pickup_longitude=pickup_longitude,
         pickup_place_id=pickup_place_id,
@@ -433,6 +434,169 @@ def create_order(
     return {
         "message": "Order created successfully",
         "order": _order_dict(order)
+    }
+
+
+class BulkOrderItem(BaseModel):
+    pickup_location: str
+    delivery_location: str
+    weight: int
+    deadline: Optional[str] = None
+    delivery_deadline: Optional[str] = None
+    cargo_category: Optional[str] = "General Cargo"
+    length: Optional[float] = 100.0
+    width: Optional[float] = 100.0
+    height: Optional[float] = 100.0
+    dimension_unit: Optional[str] = "cm"
+    package_count: Optional[int] = 1
+    volume_m3: Optional[float] = None
+    priority: Optional[int] = 0
+    is_fragile: Optional[bool] = False
+    is_hazardous: Optional[bool] = False
+    is_perishable: Optional[bool] = False
+    requires_temperature_control: Optional[bool] = False
+    temperature_min_c: Optional[float] = None
+    temperature_max_c: Optional[float] = None
+    handling_instructions: Optional[str] = None
+    pickup_latitude: Optional[str] = None
+    pickup_longitude: Optional[str] = None
+    delivery_latitude: Optional[str] = None
+    delivery_longitude: Optional[str] = None
+    distance_km: Optional[float] = 0.0
+
+
+class BulkOrderRequest(BaseModel):
+    orders: List[BulkOrderItem]
+
+
+def _haversine_road_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+    r = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2.0)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return max(15.0, round(r * c * 1.25, 2))
+
+
+@router.post("/bulk")
+def bulk_create_orders(
+    payload: BulkOrderRequest,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk import multiple consignments/orders at once from CSV or JSON list.
+    Auto-resolves Indian city coordinates, computes road distances, calculates volumes, and infers urgency.
+    """
+    if not payload.orders:
+        raise HTTPException(status_code=400, detail="No orders provided in payload")
+
+    from app.optimization.india_gazetteer import search_local_gazetteer
+
+    created = []
+    curr_company_id = current_user.company_id if current_user else 1
+    curr_user_id = current_user.id if current_user else None
+    now_utc = datetime.now(timezone.utc)
+
+    for item in payload.orders:
+        p_loc = (item.pickup_location or "").strip()
+        d_loc = (item.delivery_location or "").strip()
+        if not p_loc or not d_loc:
+            continue
+
+        p_lat = item.pickup_latitude
+        p_lon = item.pickup_longitude
+        d_lat = item.delivery_latitude
+        d_lon = item.delivery_longitude
+
+        # Resolve coordinates from Indian gazetteer if missing
+        if not p_lat or not p_lon:
+            p_matches = search_local_gazetteer(p_loc, limit=1)
+            if p_matches:
+                p_place = p_matches[0].get("place", p_matches[0])
+                p_lat = str(p_place.get("latitude") or p_place.get("lat") or "")
+                p_lon = str(p_place.get("longitude") or p_place.get("lon") or "")
+
+        if not d_lat or not d_lon:
+            d_matches = search_local_gazetteer(d_loc, limit=1)
+            if d_matches:
+                d_place = d_matches[0].get("place", d_matches[0])
+                d_lat = str(d_place.get("latitude") or d_place.get("lat") or "")
+                d_lon = str(d_place.get("longitude") or d_place.get("lon") or "")
+
+        # Compute road distance
+        dist = round(float(item.distance_km or 0), 2)
+        if dist <= 0 and p_lat and p_lon and d_lat and d_lon:
+            try:
+                dist = _haversine_road_distance(float(p_lat), float(p_lon), float(d_lat), float(d_lon))
+            except Exception:
+                dist = 250.0
+        elif dist <= 0:
+            dist = 250.0
+
+        # Calculate volume
+        vol = item.volume_m3
+        if not vol and item.length and item.width and item.height:
+            unit = (item.dimension_unit or "cm").lower()
+            pkgs = item.package_count or 1
+            if unit == "cm":
+                vol = round(((item.length * item.width * item.height) / 1000000.0) * pkgs, 3)
+            elif unit == "m":
+                vol = round((item.length * item.width * item.height) * pkgs, 3)
+            elif unit == "ft":
+                vol = round(((item.length * 0.3048) * (item.width * 0.3048) * (item.height * 0.3048)) * pkgs, 3)
+        if not vol:
+            vol = round(max(0.5, (item.weight or 1000) / 350.0), 2)
+
+        deadline_str = item.delivery_deadline or item.deadline
+        if not deadline_str:
+            deadline_str = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        order = Order(
+            pickup_location=p_loc,
+            delivery_location=d_loc,
+            weight=int(item.weight) if item.weight else 1000,
+            deadline=deadline_str,
+            delivery_deadline=deadline_str,
+            distance_km=dist,
+            pickup_latitude=p_lat,
+            pickup_longitude=p_lon,
+            delivery_latitude=d_lat,
+            delivery_longitude=d_lon,
+            cargo_category=item.cargo_category or "General Cargo",
+            priority=item.priority or 0,
+            is_fragile=bool(item.is_fragile),
+            is_hazardous=bool(item.is_hazardous),
+            is_perishable=bool(item.is_perishable),
+            requires_temperature_control=bool(item.requires_temperature_control),
+            temperature_min_c=item.temperature_min_c,
+            temperature_max_c=item.temperature_max_c,
+            handling_instructions=item.handling_instructions,
+            volume_m3=vol,
+            length=item.length,
+            width=item.width,
+            height=item.height,
+            dimension_unit=item.dimension_unit or "cm",
+            package_count=item.package_count or 1,
+            company_id=curr_company_id,
+            user_id=curr_user_id,
+            status="pending"
+        )
+        order.urgency = calculate_urgency(order)
+        db.add(order)
+        created.append(order)
+
+    db.commit()
+    for o in created:
+        db.refresh(o)
+
+    return {
+        "message": f"Successfully imported {len(created)} consignments",
+        "count": len(created),
+        "orders": [_order_dict(o) for o in created]
     }
 
 
@@ -534,7 +698,7 @@ def update_order(
     delivery_location: str = None,
     weight: int = None,
     deadline: str = None,
-    distance_km: int = None,
+    distance_km: float = None,
     pickup_latitude: str = None,
     pickup_longitude: str = None,
     pickup_place_id: str = None,
@@ -627,7 +791,7 @@ def update_order(
         order.weight = weight
     if deadline is not None: order.deadline = deadline
     if distance_km is not None and distance_km > 0:
-        order.distance_km = distance_km
+        order.distance_km = round(float(distance_km), 2)
     if pickup_latitude is not None: order.pickup_latitude = pickup_latitude
     if pickup_longitude is not None: order.pickup_longitude = pickup_longitude
     if pickup_place_id is not None: order.pickup_place_id = pickup_place_id
@@ -649,7 +813,7 @@ def update_order(
                     dest_lat=d_lat, dest_lon=d_lon, dest_place_id=order.delivery_place_id
                 )
                 if calc_res and calc_res.get("distance_km", 0) > 0:
-                    order.distance_km = int(calc_res["distance_km"])
+                    order.distance_km = round(float(calc_res["distance_km"]), 2)
                     order.estimated_travel_hours = float(calc_res.get("estimated_travel_hours", round(order.distance_km / 50.0, 2)))
         except Exception:
             pass

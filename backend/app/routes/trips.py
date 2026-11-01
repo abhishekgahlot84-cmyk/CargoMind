@@ -509,7 +509,7 @@ def auto_allocate_trip(
         truck_id=selected_truck.id,
         driver_id=selected_driver.id,
         order_id=order.id,
-        distance=int(dist_km),
+        distance=round(float(dist_km), 2),
         estimated_time=int(est_hours),
         fuel_cost=fuel_cost,
         status="planned",
@@ -551,7 +551,7 @@ def create_trip(
     truck_id: int,
     driver_id: int,
     order_id: int,
-    distance: int = 0,
+    distance: float = 0.0,
     estimated_time: int = 0,
     fuel_cost: int = 0,
     db: Session = Depends(get_db)

@@ -182,6 +182,28 @@ def init_engine():
 
 engine = init_engine()
 
+# Safe auto-migration for newly added model columns
+try:
+    from sqlalchemy import text
+    with engine.connect() as _conn:
+        if engine.dialect.name == "sqlite":
+            _tbl = _conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='drivers';")).first()
+            if _tbl:
+                _cols = [r[1] for r in _conn.execute(text("PRAGMA table_info(drivers);")).fetchall()]
+                if "rest_until" not in _cols:
+                    _conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
+                    _conn.commit()
+        elif engine.dialect.name == "postgresql":
+            _conn.execute(text("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS rest_until VARCHAR(50);"))
+            try:
+                _conn.execute(text("ALTER TABLE orders ALTER COLUMN distance_km TYPE DOUBLE PRECISION;"))
+                _conn.execute(text("ALTER TABLE trips ALTER COLUMN distance TYPE DOUBLE PRECISION;"))
+            except Exception:
+                pass
+            _conn.commit()
+except Exception:
+    pass
+
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,

@@ -82,6 +82,41 @@ def compute_driver_wellness(
         except Exception:
             pass
 
+    # Check if driver is actively resting or if rest period has completed
+    rest_until_str = getattr(driver, "rest_until", None)
+    is_actively_resting = (getattr(driver, "status", None) == "resting")
+    rest_hours_remaining = 0.0
+
+    if rest_until_str:
+        try:
+            rest_until_dt = datetime.fromisoformat(str(rest_until_str).replace("Z", "+00:00"))
+            now_dt = datetime.now(timezone.utc)
+            if rest_until_dt.tzinfo is None:
+                rest_until_dt = rest_until_dt.replace(tzinfo=timezone.utc)
+
+            if now_dt < rest_until_dt:
+                is_actively_resting = True
+                rest_hours_remaining = round(max(0.0, (rest_until_dt - now_dt).total_seconds() / 3600.0), 1)
+            else:
+                # Rest period has officially expired: driver has recovered!
+                if getattr(driver, "status", None) == "resting":
+                    driver.status = "available"
+                    driver.hours_driven_24h = 0.0
+                    driver.night_driving_hours = 0.0
+                    driver.rest_hours = max(float(getattr(driver, "rest_hours", 0.0) or 0.0), 8.0)
+                    driver.rest_until = None
+                    is_actively_resting = False
+                    rest_h = max(rest_h, 8.0)
+                    h24 = 0.0
+                    night_h = 0.0
+                    if db is not None:
+                        try:
+                            db.commit()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
     # 2. Count recent handovers in last 7 days if db session is provided
     recent_handovers_count = 0
     if db is not None and hasattr(driver, "id") and driver.id:
@@ -178,16 +213,29 @@ def compute_driver_wellness(
     if not reasons and score >= 80:
         reasons.append("Well-rested, safe driving history, full circadian compliance")
 
+    if is_actively_resting:
+        is_assignable = False
+        blocking_reason = (
+            f"Driver on mandatory rest until {rest_until_str} ({rest_hours_remaining}h remaining)"
+            if rest_until_str else "Driver currently on mandatory rest"
+        )
+    else:
+        is_assignable = score >= 60 and rest_h >= 8.0
+        blocking_reason = (
+            "Score below 60 (high fatigue)" if score < 60
+            else ("Insufficient rest (< 8 hours)" if rest_h < 8.0 else None)
+        )
+
     return {
         "score": score,
         "band": band,
         "breakdown": breakdown,
         "reasons": reasons,
-        "is_assignable": score >= 60 and rest_h >= 8.0,
-        "blocking_reason": (
-            "Score below 60 (high fatigue)" if score < 60
-            else ("Insufficient rest (< 8 hours)" if rest_h < 8.0 else None)
-        )
+        "is_assignable": is_assignable,
+        "blocking_reason": blocking_reason,
+        "is_actively_resting": is_actively_resting,
+        "rest_until": getattr(driver, "rest_until", None),
+        "rest_hours_remaining": rest_hours_remaining,
     }
 
 

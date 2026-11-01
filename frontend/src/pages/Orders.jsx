@@ -15,6 +15,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   Search,
+  UploadCloud,
+  FileSpreadsheet,
+  Check,
 } from "lucide-react";
 import api from "../services/api";
 import PlaceAutocomplete from "../components/PlaceAutocomplete";
@@ -122,6 +125,13 @@ function computeVolumeM3(lStr, wStr, hStr, unit = "cm", pkgsStr = "1") {
   const [deletingOrder, setDeletingOrder] = useState(null);
   const [deleteError, setDeleteError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Bulk Import Consignments State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkSuccess, setBulkSuccess] = useState("");
 
   async function fetchOrders() {
     try {
@@ -453,6 +463,113 @@ function computeVolumeM3(lStr, wStr, hStr, unit = "cm", pkgsStr = "1") {
     }
   }
 
+  function parseOrderCSV(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Fall back
+      }
+    }
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/['"]/g, ""));
+    const results = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(",").map((p) => p.trim().replace(/^["']|["']$/g, ""));
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = parts[idx] !== undefined ? parts[idx] : "";
+      });
+      const pickup = obj.pickup_location || obj.origin || obj.pickup || obj.from;
+      const delivery = obj.delivery_location || obj.destination || obj.delivery || obj.to;
+      if (pickup && delivery) {
+        results.push({
+          pickup_location: pickup,
+          delivery_location: delivery,
+          weight: Number(obj.weight || obj.weight_kg) || 1500,
+          cargo_category: obj.cargo_category || obj.category || "General Cargo",
+          deadline: obj.deadline || obj.delivery_deadline || "",
+          delivery_deadline: obj.delivery_deadline || obj.deadline || "",
+          distance_km: Number(obj.distance_km || obj.distance) || 0,
+          length: Number(obj.length) || 120,
+          width: Number(obj.width) || 100,
+          height: Number(obj.height) || 100,
+          dimension_unit: obj.dimension_unit || "cm",
+          package_count: Number(obj.package_count || obj.packages) || 1,
+          volume_m3: obj.volume_m3 ? Number(obj.volume_m3) : undefined,
+          is_fragile: obj.is_fragile === "true" || obj.is_fragile === "1" || obj.is_fragile === true,
+          is_hazardous: obj.is_hazardous === "true" || obj.is_hazardous === "1" || obj.is_hazardous === true,
+          is_perishable: obj.is_perishable === "true" || obj.is_perishable === "1" || obj.is_perishable === true,
+          handling_instructions: obj.handling_instructions || "",
+        });
+      }
+    }
+    return results;
+  }
+
+  const sampleOrdersCSV = `pickup_location,delivery_location,weight,cargo_category,length,width,height,package_count,is_fragile,is_perishable
+Mumbai,Delhi (NCR),4500,Technology,150,120,110,4,true,false
+Bengaluru,Chennai,3200,Automotive Parts,120,80,90,6,false,false
+Ahmedabad,Pune,2800,Chemicals,100,100,100,2,false,false
+Kolkata,Lucknow,5200,Industrial Machinery,200,150,140,1,false,false
+Hyderabad,Nagpur,1900,Pharmaceuticals,80,60,60,8,true,true`;
+
+  function handleOpenBulkModal() {
+    setBulkText("");
+    setBulkError("");
+    setBulkSuccess("");
+    setShowBulkModal(true);
+  }
+
+  function handleLoadSampleOrders() {
+    setBulkText(sampleOrdersCSV);
+    setBulkError("");
+  }
+
+  function handleFileBulkOrders(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setBulkText(event.target?.result || "");
+      setBulkError("");
+    };
+    reader.readAsText(file);
+  }
+
+  const parsedBulkOrders = useMemo(() => {
+    return parseOrderCSV(bulkText);
+  }, [bulkText]);
+
+  async function handleSubmitBulkOrders(e) {
+    e.preventDefault();
+    if (!parsedBulkOrders || parsedBulkOrders.length === 0) {
+      setBulkError("No valid consignments parsed. Please check CSV/JSON format.");
+      return;
+    }
+    setBulkSubmitting(true);
+    setBulkError("");
+    setBulkSuccess("");
+    try {
+      const res = await api.post("/orders/bulk", { orders: parsedBulkOrders });
+      setBulkSuccess(res.data?.message || `Successfully imported ${parsedBulkOrders.length} consignments.`);
+      await fetchOrders();
+      setTimeout(() => {
+        setShowBulkModal(false);
+      }, 1200);
+    } catch (err) {
+      console.error("Bulk orders import failed:", err);
+      const detail = err.response?.data?.detail;
+      setBulkError(typeof detail === "string" ? detail : "Failed to import consignments in bulk.");
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
   const filteredOrders = useMemo(() => {
     return [...orders]
       .sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0))
@@ -504,6 +621,10 @@ function computeVolumeM3(lStr, wStr, hStr, unit = "cm", pkgsStr = "1") {
               {seeding ? "Generating Orders..." : "Seed Starter Orders"}
             </button>
           )}
+          <button onClick={handleOpenBulkModal} className="apple-btn-secondary text-xs">
+            <UploadCloud size={14} />
+            Bulk Import
+          </button>
           <button id="order-book-shipment-btn" onClick={handleOpenCreate} className="apple-btn-primary text-xs">
             <Plus size={14} />
             Book Shipment
@@ -1009,7 +1130,8 @@ function computeVolumeM3(lStr, wStr, hStr, unit = "cm", pkgsStr = "1") {
                   </div>
                   <input
                     type="number"
-                    min="1"
+                    min="0.1"
+                    step="any"
                     value={form.distance_km}
                     onChange={(e) => setForm({ ...form, distance_km: e.target.value })}
                     placeholder="Calculated automatically via Google Routes"
@@ -1179,6 +1301,152 @@ function computeVolumeM3(lStr, wStr, hStr, unit = "cm", pkgsStr = "1") {
                 className="rounded-full bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 transition"
               >
                 {isDeleting ? "Deleting..." : "Delete Permanently"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Import Consignments Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl apple-card p-6 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5">
+                <div className="grid h-8 w-8 place-items-center rounded-lg bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/20 dark:text-[#2997ff]">
+                  <UploadCloud size={16} />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Bulk Import Consignments
+                  </h2>
+                  <p className="text-xs text-[#86868b]">
+                    Batch register orders across Indian freight corridors via CSV or JSON
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBulkModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-4 flex-1 overflow-y-auto space-y-4">
+              {bulkError && (
+                <div className="flex items-center gap-2 rounded-lg bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400 border border-red-500/20">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{bulkError}</span>
+                </div>
+              )}
+
+              {bulkSuccess && (
+                <div className="flex items-center gap-2 rounded-lg bg-[#34c759]/10 p-3 text-xs text-[#34c759] border border-[#34c759]/20">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{bulkSuccess}</span>
+                </div>
+              )}
+
+              {/* Actions row */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2">
+                  <label className="apple-btn-secondary text-xs cursor-pointer">
+                    <FileSpreadsheet size={13} />
+                    Upload CSV / JSON
+                    <input
+                      type="file"
+                      accept=".csv,.json,text/plain"
+                      onChange={handleFileBulkOrders}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleOrders}
+                    className="apple-btn-secondary text-xs"
+                  >
+                    Load Sample Corridors
+                  </button>
+                </div>
+                <span className="text-xs text-[#86868b]">
+                  {parsedBulkOrders.length} consignment{parsedBulkOrders.length === 1 ? "" : "s"} detected
+                </span>
+              </div>
+
+              {/* CSV/JSON Textarea */}
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  CSV / JSON Data
+                </label>
+                <textarea
+                  rows={6}
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  placeholder="Paste CSV rows (e.g. pickup_location,delivery_location,weight,cargo_category,length,width,height) or JSON array..."
+                  className="mt-1.5 w-full rounded-xl border border-black/[0.1] bg-black/[0.02] p-3 font-mono text-xs text-[#1d1d1f] dark:border-white/[0.1] dark:bg-white/[0.02] dark:text-[#f5f5f7] outline-none focus:border-[#0071e3]"
+                />
+              </div>
+
+              {/* Live Preview Table */}
+              {parsedBulkOrders.length > 0 && (
+                <div className="rounded-xl border border-black/[0.08] dark:border-white/[0.08] overflow-hidden">
+                  <div className="bg-black/[0.03] dark:bg-white/[0.03] px-3 py-2 border-b border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      Import Preview ({parsedBulkOrders.length} consignments ready)
+                    </span>
+                    <span className="text-[10px] text-[#34c759] font-medium flex items-center gap-1">
+                      <Check size={12} /> Auto-geocoding enabled
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-black/[0.02] dark:bg-white/[0.02] text-[10px] uppercase text-[#86868b]">
+                        <tr>
+                          <th className="px-3 py-1.5">Origin</th>
+                          <th className="px-3 py-1.5">Destination</th>
+                          <th className="px-3 py-1.5">Weight (kg)</th>
+                          <th className="px-3 py-1.5">Category</th>
+                          <th className="px-3 py-1.5">Dimensions (cm)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                        {parsedBulkOrders.map((o, idx) => (
+                          <tr key={idx}>
+                            <td className="px-3 py-1.5 font-medium">{o.pickup_location}</td>
+                            <td className="px-3 py-1.5 font-medium">{o.delivery_location}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{o.weight?.toLocaleString()} kg</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{o.cargo_category}</td>
+                            <td className="px-3 py-1.5 font-mono text-[11px] text-[#86868b]">
+                              {o.length}×{o.width}×{o.height} ({o.package_count} pkgs)
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 mt-4 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="apple-btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitBulkOrders}
+                disabled={bulkSubmitting || parsedBulkOrders.length === 0}
+                className="apple-btn-primary text-xs"
+              >
+                <UploadCloud size={14} />
+                {bulkSubmitting
+                  ? "Importing..."
+                  : `Import ${parsedBulkOrders.length} Consignment${parsedBulkOrders.length === 1 ? "" : "s"}`}
               </button>
             </div>
           </div>

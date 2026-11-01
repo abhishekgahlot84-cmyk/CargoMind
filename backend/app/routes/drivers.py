@@ -1,6 +1,8 @@
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.database.connection import get_db
 from app.database.models import Driver, Trip, User, WellnessHistory
@@ -12,6 +14,27 @@ router = APIRouter(
     prefix="/drivers",
     tags=["Drivers"]
 )
+
+
+class RestRequest(BaseModel):
+    rest_hours: float = Field(default=8.0, ge=1.0, le=48.0, description="Mandatory rest duration in hours")
+    notes: Optional[str] = None
+
+
+class BulkDriverItem(BaseModel):
+    name: str
+    license_category: Optional[str] = "Heavy (HCV)"
+    license_number: Optional[str] = None
+    phone: Optional[str] = None
+    experience_years: Optional[int] = 3
+    working_hours: Optional[int] = 0
+    rest_hours: Optional[int] = 8
+    notes: Optional[str] = None
+    status: Optional[str] = "available"
+
+
+class BulkDriverRequest(BaseModel):
+    drivers: List[BulkDriverItem]
 
 
 def _driver_dict(driver, db: Optional[Session] = None):
@@ -34,6 +57,9 @@ def _driver_dict(driver, db: Optional[Session] = None):
         "wellness_band": wellness["band"],
         "is_assignable": wellness["is_assignable"],
         "blocking_reason": wellness["blocking_reason"],
+        "is_actively_resting": wellness.get("is_actively_resting", False),
+        "rest_until": getattr(driver, "rest_until", None),
+        "rest_hours_remaining": wellness.get("rest_hours_remaining", 0.0),
         "hours_driven_24h": getattr(driver, "hours_driven_24h", 0.0) or 0.0,
         "hours_driven_7d": getattr(driver, "hours_driven_7d", 0.0) or 0.0,
         "night_driving_hours": getattr(driver, "night_driving_hours", 0.0) or 0.0,
@@ -157,7 +183,7 @@ def update_driver(
     if notes is not None:
         driver.notes = notes
     if status is not None:
-        allowed = ["available", "assigned", "busy", "off_duty", "inactive"]
+        allowed = ["available", "assigned", "busy", "off_duty", "inactive", "resting"]
         if status not in allowed:
             raise HTTPException(
                 status_code=400,
@@ -306,3 +332,127 @@ def get_driver_wellness_history(
         }
         for h in history
     ]
+
+
+@router.post("/{driver_id}/send-to-rest")
+def send_driver_to_rest(
+    driver_id: int,
+    payload: Optional[RestRequest] = None,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Send a fatigued driver to mandatory rest for specified hours (default 8h).
+    Calculates exact future availability timestamp, sets status to resting,
+    resets 24h driving fatigue, and persists wellness log.
+    """
+    driver = db.query(Driver).filter(
+        Driver.id == driver_id,
+        Driver.company_id == current_user.company_id
+    ).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    rest_hours = payload.rest_hours if payload else 8.0
+    now_utc = datetime.now(timezone.utc)
+    rest_until_utc = now_utc + timedelta(hours=rest_hours)
+
+    driver.status = "resting"
+    driver.last_rest_start = now_utc.isoformat()
+    driver.rest_until = rest_until_utc.isoformat()
+    driver.rest_hours = rest_hours
+    # Reset shift fatigue counters during mandatory rest
+    driver.hours_driven_24h = 0.0
+    driver.night_driving_hours = 0.0
+    if payload and payload.notes:
+        driver.notes = f"{driver.notes or ''} [Rest {rest_hours}h: {payload.notes}]".strip()
+
+    wellness = update_and_persist_driver_wellness(driver, db=db, persist_history=True)
+
+    return {
+        "message": f"Driver {driver.name} assigned to {rest_hours}h mandatory rest until {driver.rest_until}",
+        "available_at": driver.rest_until,
+        "rest_hours": rest_hours,
+        "driver": _driver_dict(driver, db=db)
+    }
+
+
+@router.post("/{driver_id}/end-rest")
+def end_driver_rest(
+    driver_id: int,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually complete or cancel driver rest period, returning driver to available status.
+    """
+    driver = db.query(Driver).filter(
+        Driver.id == driver_id,
+        Driver.company_id == current_user.company_id
+    ).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    driver.status = "available"
+    driver.rest_until = None
+    driver.hours_driven_24h = 0.0
+    driver.night_driving_hours = 0.0
+    driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+
+    wellness = update_and_persist_driver_wellness(driver, db=db, persist_history=True)
+
+    return {
+        "message": f"Rest completed for {driver.name}. Driver is now available for truck assignment.",
+        "driver": _driver_dict(driver, db=db)
+    }
+
+
+@router.post("/bulk")
+def bulk_create_drivers(
+    payload: BulkDriverRequest,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk import multiple drivers at once from CSV or JSON list.
+    """
+    if not payload.drivers:
+        raise HTTPException(status_code=400, detail="No drivers provided in payload")
+
+    created = []
+    curr_company_id = current_user.company_id if current_user else 1
+    curr_user_id = current_user.id if current_user else None
+
+    for item in payload.drivers:
+        if not item.name or not item.name.strip():
+            continue
+        driver = Driver(
+            name=item.name.strip(),
+            license_category=item.license_category or "Heavy (HCV)",
+            license_number=item.license_number.strip() if item.license_number else None,
+            phone=item.phone.strip() if item.phone else None,
+            experience_years=item.experience_years if item.experience_years is not None else 3,
+            working_hours=item.working_hours or 0,
+            rest_hours=item.rest_hours if item.rest_hours is not None else 8,
+            notes=item.notes,
+            company_id=curr_company_id,
+            user_id=curr_user_id,
+            status=item.status or "available",
+            wellness_score=90,
+            hours_driven_24h=0.0,
+            hours_driven_7d=0.0,
+            night_driving_hours=0.0,
+            consecutive_working_days=0,
+        )
+        db.add(driver)
+        created.append(driver)
+
+    db.commit()
+    for d in created:
+        db.refresh(d)
+
+    return {
+        "message": f"Successfully imported {len(created)} drivers",
+        "count": len(created),
+        "drivers": [_driver_dict(d, db=db) for d in created]
+    }

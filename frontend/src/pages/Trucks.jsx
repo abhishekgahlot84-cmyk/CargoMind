@@ -17,6 +17,9 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   FileText,
+  UploadCloud,
+  FileSpreadsheet,
+  Check,
 } from "lucide-react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -89,6 +92,13 @@ export default function Trucks() {
   const [selectedTruckForLogs, setSelectedTruckForLogs] = useState(null);
   const [truckLogs, setTruckLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+
+  // Bulk Import State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkSuccess, setBulkSuccess] = useState("");
 
   async function fetchSuggestions() {
     try {
@@ -356,6 +366,106 @@ export default function Trucks() {
     }
   }
 
+  function parseTruckCSV(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Fall back
+      }
+    }
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/['"]/g, ""));
+    const results = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(",").map((p) => p.trim().replace(/^["']|["']$/g, ""));
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = parts[idx] !== undefined ? parts[idx] : "";
+      });
+      const reg = obj.registration_number || obj.reg_no || obj.registration || obj.plate;
+      if (reg) {
+        results.push({
+          registration_number: reg.toUpperCase(),
+          capacity: Number(obj.capacity || obj.payload) || 8000,
+          fuel_type: obj.fuel_type || obj.fuel || "Diesel",
+          fuel_efficiency: Number(obj.fuel_efficiency || obj.mileage_kmpl || obj.mileage) || 4,
+          mileage_kmpl: Number(obj.mileage_kmpl || obj.fuel_efficiency) || 4.0,
+          model: obj.model || "Tata Prima 5530.S",
+          year: Number(obj.year) || 2023,
+          notes: obj.notes || "",
+          status: obj.status || "available",
+          max_speed_kmph: Number(obj.max_speed_kmph || obj.max_speed) || 60,
+          avg_speed_kmph: Number(obj.avg_speed_kmph || obj.avg_speed) || 45,
+        });
+      }
+    }
+    return results;
+  }
+
+  const sampleTrucksCSV = `registration_number,capacity,fuel_type,model,mileage_kmpl,year,max_speed_kmph,avg_speed_kmph,notes
+MH-04-AZ-1122,12000,Diesel,Tata Signa 2823.K,4.2,2023,60,45,Heavy Freight Express
+DL-01-AB-3344,8000,Diesel,Ashok Leyland Ecomet,5.0,2022,60,45,North Corridor Hauler
+KA-05-CD-5566,16000,Diesel,BharatBenz 2823R,3.8,2024,60,45,Interstate Container Rig
+GJ-06-EF-7788,10000,CNG,Tata Ultra T.16,4.5,2023,60,45,Western Green Freight
+TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industrial Express`;
+
+  function handleOpenBulkModal() {
+    setBulkText("");
+    setBulkError("");
+    setBulkSuccess("");
+    setShowBulkModal(true);
+  }
+
+  function handleLoadSampleTrucks() {
+    setBulkText(sampleTrucksCSV);
+    setBulkError("");
+  }
+
+  function handleFileBulkTrucks(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setBulkText(event.target?.result || "");
+      setBulkError("");
+    };
+    reader.readAsText(file);
+  }
+
+  const parsedBulkTrucks = useMemo(() => {
+    return parseTruckCSV(bulkText);
+  }, [bulkText]);
+
+  async function handleSubmitBulkTrucks(e) {
+    e.preventDefault();
+    if (!parsedBulkTrucks || parsedBulkTrucks.length === 0) {
+      setBulkError("No valid trucks parsed. Please check CSV/JSON format.");
+      return;
+    }
+    setBulkSubmitting(true);
+    setBulkError("");
+    setBulkSuccess("");
+    try {
+      const res = await api.post("/trucks/bulk", { trucks: parsedBulkTrucks });
+      setBulkSuccess(res.data?.message || `Successfully imported ${parsedBulkTrucks.length} trucks.`);
+      await fetchTrucks();
+      setTimeout(() => {
+        setShowBulkModal(false);
+      }, 1200);
+    } catch (err) {
+      console.error("Bulk truck import failed:", err);
+      const detail = err.response?.data?.detail;
+      setBulkError(typeof detail === "string" ? detail : "Failed to import trucks in bulk.");
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
   const filteredTrucks = useMemo(() => {
     return trucks.filter((t) => {
       const matchesSearch =
@@ -391,6 +501,10 @@ export default function Trucks() {
         </div>
 
         <div className="flex gap-2.5">
+          <button onClick={handleOpenBulkModal} className="apple-btn-secondary text-xs">
+            <UploadCloud size={14} />
+            Bulk Import
+          </button>
           <button onClick={handleOpenCreate} className="apple-btn-primary text-xs">
             <Plus size={14} />
             Register Truck
@@ -1441,6 +1555,150 @@ export default function Trucks() {
                 className="apple-btn-primary text-xs"
               >
                 Close Logs
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Import Trucks Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl apple-card p-6 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5">
+                <div className="grid h-8 w-8 place-items-center rounded-lg bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/20 dark:text-[#2997ff]">
+                  <UploadCloud size={16} />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Bulk Import Fleet Vehicles
+                  </h2>
+                  <p className="text-xs text-[#86868b]">
+                    Batch register trucks via CSV or JSON format
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBulkModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-4 flex-1 overflow-y-auto space-y-4">
+              {bulkError && (
+                <div className="flex items-center gap-2 rounded-lg bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400 border border-red-500/20">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{bulkError}</span>
+                </div>
+              )}
+
+              {bulkSuccess && (
+                <div className="flex items-center gap-2 rounded-lg bg-[#34c759]/10 p-3 text-xs text-[#34c759] border border-[#34c759]/20">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{bulkSuccess}</span>
+                </div>
+              )}
+
+              {/* Actions row */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2">
+                  <label className="apple-btn-secondary text-xs cursor-pointer">
+                    <FileSpreadsheet size={13} />
+                    Upload CSV / JSON
+                    <input
+                      type="file"
+                      accept=".csv,.json,text/plain"
+                      onChange={handleFileBulkTrucks}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleTrucks}
+                    className="apple-btn-secondary text-xs"
+                  >
+                    Load Sample Template
+                  </button>
+                </div>
+                <span className="text-xs text-[#86868b]">
+                  {parsedBulkTrucks.length} vehicle{parsedBulkTrucks.length === 1 ? "" : "s"} detected
+                </span>
+              </div>
+
+              {/* CSV/JSON Textarea */}
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  CSV / JSON Data
+                </label>
+                <textarea
+                  rows={6}
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  placeholder="Paste CSV rows (e.g. registration_number,capacity,fuel_type,model,mileage_kmpl) or JSON array..."
+                  className="mt-1.5 w-full rounded-xl border border-black/[0.1] bg-black/[0.02] p-3 font-mono text-xs text-[#1d1d1f] dark:border-white/[0.1] dark:bg-white/[0.02] dark:text-[#f5f5f7] outline-none focus:border-[#0071e3]"
+                />
+              </div>
+
+              {/* Live Preview Table */}
+              {parsedBulkTrucks.length > 0 && (
+                <div className="rounded-xl border border-black/[0.08] dark:border-white/[0.08] overflow-hidden">
+                  <div className="bg-black/[0.03] dark:bg-white/[0.03] px-3 py-2 border-b border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      Import Preview ({parsedBulkTrucks.length} vehicles ready)
+                    </span>
+                    <span className="text-[10px] text-[#34c759] font-medium flex items-center gap-1">
+                      <Check size={12} /> Valid schema
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-black/[0.02] dark:bg-white/[0.02] text-[10px] uppercase text-[#86868b]">
+                        <tr>
+                          <th className="px-3 py-1.5">Reg Number</th>
+                          <th className="px-3 py-1.5">Capacity (kg)</th>
+                          <th className="px-3 py-1.5">Fuel</th>
+                          <th className="px-3 py-1.5">Model</th>
+                          <th className="px-3 py-1.5">Mileage</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                        {parsedBulkTrucks.map((t, idx) => (
+                          <tr key={idx}>
+                            <td className="px-3 py-1.5 font-mono font-medium">{t.registration_number}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{t.capacity?.toLocaleString()} kg</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{t.fuel_type}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{t.model}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{t.mileage_kmpl} km/L</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 mt-4 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="apple-btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitBulkTrucks}
+                disabled={bulkSubmitting || parsedBulkTrucks.length === 0}
+                className="apple-btn-primary text-xs"
+              >
+                <UploadCloud size={14} />
+                {bulkSubmitting
+                  ? "Importing..."
+                  : `Import ${parsedBulkTrucks.length} Vehicle${parsedBulkTrucks.length === 1 ? "" : "s"}`}
               </button>
             </div>
           </div>

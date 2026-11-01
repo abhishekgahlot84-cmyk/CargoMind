@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.database.connection import get_db
 from app.database.models import Truck, Trip, User
@@ -40,6 +40,24 @@ class TruckUpdate(BaseModel):
     status: Optional[str] = None
     max_speed_kmph: Optional[float] = None
     avg_speed_kmph: Optional[float] = None
+
+
+class BulkTruckItem(BaseModel):
+    registration_number: str
+    capacity: Optional[int] = 8000
+    fuel_type: Optional[str] = "Diesel"
+    fuel_efficiency: Optional[int] = 4
+    mileage_kmpl: Optional[float] = 4.0
+    model: Optional[str] = "Tata Prima 5530.S"
+    year: Optional[int] = 2023
+    notes: Optional[str] = None
+    status: Optional[str] = "available"
+    max_speed_kmph: Optional[float] = 60.0
+    avg_speed_kmph: Optional[float] = 45.0
+
+
+class BulkTruckRequest(BaseModel):
+    trucks: List[BulkTruckItem]
 
 
 def validate_truck_speeds(max_speed: Optional[float], avg_speed: Optional[float]) -> tuple:
@@ -128,6 +146,77 @@ def create_truck(
     return {
         "message": "Truck created successfully",
         "truck": _truck_dict(truck)
+    }
+
+
+@router.post("/bulk")
+def bulk_create_trucks(
+    payload: BulkTruckRequest,
+    current_user: User = Depends(get_current_user_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk import multiple trucks at once from CSV or JSON list.
+    """
+    if not payload.trucks:
+        raise HTTPException(status_code=400, detail="No trucks provided in payload")
+
+    created = []
+    skipped = []
+    curr_company_id = current_user.company_id if current_user else 1
+    curr_user_id = current_user.id if current_user else None
+
+    # Get set of existing registration numbers for fast check
+    existing_regs = {
+        r[0].upper().strip() for r in db.query(Truck.registration_number).all()
+        if r[0]
+    }
+
+    for item in payload.trucks:
+        reg = item.registration_number.strip().upper() if item.registration_number else ""
+        if not reg:
+            continue
+        if reg in existing_regs:
+            skipped.append(reg)
+            continue
+
+        valid_max, valid_avg = validate_truck_speeds(item.max_speed_kmph, item.avg_speed_kmph)
+        eff_mileage = float(item.mileage_kmpl) if item.mileage_kmpl else (float(item.fuel_efficiency) if item.fuel_efficiency else 4.0)
+
+        truck = Truck(
+            registration_number=reg,
+            capacity=item.capacity if item.capacity else 8000,
+            fuel_type=item.fuel_type or "Diesel",
+            fuel_efficiency=item.fuel_efficiency or int(eff_mileage),
+            mileage_kmpl=eff_mileage,
+            trips_since_service=0,
+            km_since_service=0.0,
+            model=item.model or "Heavy Cargo Hauler",
+            year=item.year or 2023,
+            notes=item.notes,
+            company_id=curr_company_id,
+            user_id=curr_user_id,
+            status=item.status or "available",
+            max_speed_kmph=valid_max,
+            avg_speed_kmph=valid_avg,
+        )
+        db.add(truck)
+        created.append(truck)
+        existing_regs.add(reg)
+
+    db.commit()
+    for t in created:
+        db.refresh(t)
+
+    msg = f"Successfully imported {len(created)} trucks."
+    if skipped:
+        msg += f" {len(skipped)} already existed ({', '.join(skipped[:5])})."
+
+    return {
+        "message": msg,
+        "count": len(created),
+        "skipped_count": len(skipped),
+        "trucks": [_truck_dict(t) for t in created]
     }
 
 

@@ -87,3 +87,23 @@ def test_insufficient_rest_blocks_even_if_fair_score():
     assert res["is_assignable"] is False
     assert "rest" in res["blocking_reason"].lower()
 
+
+def test_driver_mandatory_rest_blocks_and_tracks_availability():
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    future = (now + timedelta(hours=8)).isoformat()
+    driver = DummyDriver(
+        hours_driven_24h=7.5,
+        hours_driven_7d=30.0,
+        night_driving_hours=3.0,
+        rest_hours=2.0,
+    )
+    driver.status = "resting"
+    driver.rest_until = future
+
+    res = compute_driver_wellness(driver)
+    assert res["is_assignable"] is False
+    assert res["is_actively_resting"] is True
+    assert res["rest_hours_remaining"] > 7.0
+    assert "mandatory rest" in res["blocking_reason"].lower()
+

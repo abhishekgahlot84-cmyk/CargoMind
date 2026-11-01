@@ -91,6 +91,7 @@ class Driver(Base):
     # Wellness tracking
     wellness_score = Column(Integer, default=85)
     last_rest_start = Column(String(50))  # ISO datetime
+    rest_until = Column(String(50), nullable=True)  # ISO datetime when rest period ends
     hours_driven_24h = Column(Float, default=0.0)
     hours_driven_7d = Column(Float, default=0.0)
     night_driving_hours = Column(Float, default=0.0)
@@ -149,7 +150,7 @@ class Order(Base):
     pickup_location = Column(String(255), nullable=False)
     delivery_location = Column(String(255), nullable=False)
     weight = Column(Integer, nullable=False)
-    distance_km = Column(Integer, default=0)
+    distance_km = Column(Float, default=0.0)
     pickup_latitude = Column(String(50))
     pickup_longitude = Column(String(50))
     pickup_place_id = Column(String(255))
@@ -204,7 +205,7 @@ class Trip(Base):
     order_id = Column(Integer, ForeignKey("orders.id"))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
-    distance = Column(Integer)
+    distance = Column(Float, default=0.0)
     estimated_time = Column(Integer)
     fuel_cost = Column(Integer)
     status = Column(String(30), default="planned")

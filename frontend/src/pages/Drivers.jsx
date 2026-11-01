@@ -15,6 +15,11 @@ import {
   HeartPulse,
   BatteryCharging,
   Info,
+  Moon,
+  UploadCloud,
+  FileSpreadsheet,
+  Check,
+  Clock,
 } from "lucide-react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -68,6 +73,23 @@ export default function Drivers() {
   const [wellnessHistory, setWellnessHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [recomputingWellness, setRecomputingWellness] = useState(false);
+
+  // Send to Rest Modal State
+  const [showRestModal, setShowRestModal] = useState(false);
+  const [driverForRest, setDriverForRest] = useState(null);
+  const [restDurationHours, setRestDurationHours] = useState(8);
+  const [restStartTime, setRestStartTime] = useState(0);
+  const [restNotes, setRestNotes] = useState("");
+  const [submittingRest, setSubmittingRest] = useState(false);
+  const [restError, setRestError] = useState("");
+  const [restSuccess, setRestSuccess] = useState("");
+
+  // Bulk Import Modal State
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkError, setBulkError] = useState("");
+  const [bulkSuccess, setBulkSuccess] = useState("");
 
   async function fetchDrivers() {
     try {
@@ -244,6 +266,180 @@ export default function Drivers() {
     }
   }
 
+  function parseDriverCSV(text) {
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Fall back to line parser
+      }
+    }
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase().replace(/['"]/g, ""));
+    const results = [];
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(",").map((p) => p.trim().replace(/^["']|["']$/g, ""));
+      const obj = {};
+      headers.forEach((h, idx) => {
+        obj[h] = parts[idx] !== undefined ? parts[idx] : "";
+      });
+      if (obj.name) {
+        results.push({
+          name: obj.name,
+          license_category: obj.license_category || obj.license_type || "Heavy Vehicle",
+          license_number: obj.license_number || obj.license || "",
+          phone: obj.phone || obj.mobile || "",
+          experience_years: Number(obj.experience_years || obj.experience) || 3,
+          working_hours: Number(obj.working_hours || obj.shift_hours) || 8,
+          rest_hours: Number(obj.rest_hours) || 8,
+          notes: obj.notes || "",
+          status: obj.status || "available",
+        });
+      }
+    }
+    return results;
+  }
+
+  function handleOpenRestModal(driver) {
+    setDriverForRest(driver);
+    setRestDurationHours(8);
+    setRestStartTime(Date.now());
+    setRestNotes("");
+    setRestError("");
+    setRestSuccess("");
+    setShowRestModal(true);
+  }
+
+  async function handleSubmitRest(e) {
+    if (e) e.preventDefault();
+    if (!driverForRest) return;
+    setSubmittingRest(true);
+    setRestError("");
+    setRestSuccess("");
+    try {
+      const res = await api.post(`/drivers/${driverForRest.id}/send-to-rest`, {
+        rest_hours: Number(restDurationHours) || 8,
+        notes: restNotes.trim() || undefined,
+      });
+      setRestSuccess(res.data?.message || "Driver sent to mandatory rest.");
+      await fetchDrivers();
+      setTimeout(() => {
+        setShowRestModal(false);
+      }, 1000);
+    } catch (err) {
+      console.error("Failed to send driver to rest:", err);
+      const detail = err.response?.data?.detail;
+      setRestError(typeof detail === "string" ? detail : "Failed to assign driver rest.");
+    } finally {
+      setSubmittingRest(false);
+    }
+  }
+
+  async function handleEndRest(driver) {
+    if (!window.confirm(`Complete mandatory rest early for ${driver.name} and restore to Available status?`)) {
+      return;
+    }
+    try {
+      await api.post(`/drivers/${driver.id}/end-rest`);
+      await fetchDrivers();
+    } catch (err) {
+      console.error("Failed to end rest:", err);
+      alert("Failed to end rest. Please try again.");
+    }
+  }
+
+  function handleOpenBulkModal() {
+    setBulkText("");
+    setBulkError("");
+    setBulkSuccess("");
+    setShowBulkModal(true);
+  }
+
+  const sampleDriversCSV = `name,license_category,license_number,phone,experience_years,working_hours,rest_hours,notes
+Rajesh Kumar,Heavy Vehicle,MH0120200012345,+91 98201 12345,8,8,8,Senior Interstate Driver
+Vikram Singh,Multi-Axle Trailer,DL0420180056789,+91 98112 56789,12,8,10,Specialized Heavy Haul
+Amit Sharma,Commercial Medium,KA0520210098765,+91 98450 98765,5,8,8,South Freight Corridor
+Mohammed Irfan,Heavy Vehicle,TS0920190043210,+91 98661 43210,7,8,8,Central Transit Specialist
+Suresh Patel,Hazardous Materials Endorsement,GJ0120170067890,+91 98250 67890,10,8,12,Hazmat Tanker Certified`;
+
+  function handleLoadSampleDrivers() {
+    setBulkText(sampleDriversCSV);
+    setBulkError("");
+  }
+
+  function handleFileBulkDrivers(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setBulkText(event.target?.result || "");
+      setBulkError("");
+    };
+    reader.readAsText(file);
+  }
+
+  const parsedBulkDrivers = useMemo(() => {
+    return parseDriverCSV(bulkText);
+  }, [bulkText]);
+
+  async function handleSubmitBulkDrivers(e) {
+    e.preventDefault();
+    if (!parsedBulkDrivers || parsedBulkDrivers.length === 0) {
+      setBulkError("No valid drivers parsed. Please check CSV/JSON format.");
+      return;
+    }
+    setBulkSubmitting(true);
+    setBulkError("");
+    setBulkSuccess("");
+    try {
+      const res = await api.post("/drivers/bulk", { drivers: parsedBulkDrivers });
+      setBulkSuccess(res.data?.message || `Successfully imported ${parsedBulkDrivers.length} drivers.`);
+      await fetchDrivers();
+      setTimeout(() => {
+        setShowBulkModal(false);
+      }, 1200);
+    } catch (err) {
+      console.error("Bulk driver import failed:", err);
+      const detail = err.response?.data?.detail;
+      setBulkError(typeof detail === "string" ? detail : "Failed to import drivers in bulk.");
+    } finally {
+      setBulkSubmitting(false);
+    }
+  }
+
+  function formatRestUntil(isoStr) {
+    if (!isoStr) return "";
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleString("en-IN", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return isoStr;
+    }
+  }
+
+  const calculatedAvailableDate = useMemo(() => {
+    const base = restStartTime > 0 ? restStartTime : 0;
+    const d = new Date(base + (Number(restDurationHours) || 8) * 3600 * 1000);
+    return d.toLocaleString("en-IN", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }, [restStartTime, restDurationHours]);
+
   const filteredDrivers = useMemo(() => {
     return drivers.filter((d) => {
       const matchesSearch =
@@ -280,6 +476,10 @@ export default function Drivers() {
         </div>
 
         <div className="flex gap-2.5">
+          <button onClick={handleOpenBulkModal} className="apple-btn-secondary text-xs">
+            <UploadCloud size={14} />
+            Bulk Import
+          </button>
           <button onClick={handleOpenCreate} className="apple-btn-primary text-xs">
             <Plus size={14} />
             Register Driver
@@ -474,9 +674,42 @@ export default function Drivers() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      {driver.is_assignable === false || driver.blocking_reason ? (
+                      {driver.status === "resting" || driver.is_actively_resting ? (
+                        <div className="flex flex-col gap-1">
+                          <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold bg-purple-500/10 text-purple-600 border border-purple-500/25 dark:bg-purple-500/20 dark:text-purple-300 w-fit">
+                            <Moon size={11} className="animate-pulse text-purple-600 dark:text-purple-400" />
+                            <span>On Mandatory Rest</span>
+                          </span>
+                          <span className="text-[10px] text-purple-700 dark:text-purple-300 font-medium">
+                            {driver.rest_hours_remaining ? `${driver.rest_hours_remaining}h left` : "Rest active"} • Available {formatRestUntil(driver.rest_until)}
+                          </span>
+                          <button
+                            onClick={() => handleEndRest(driver)}
+                            className="text-[10px] text-[#0071e3] hover:underline font-medium text-left w-fit"
+                          >
+                            Complete Rest Early
+                          </button>
+                        </div>
+                      ) : (driver.wellness_score ?? 100) < 60 || driver.wellness_band === "needs_rest" ? (
+                        <div className="flex flex-col gap-1.5">
+                          <span className="apple-badge bg-red-500/10 text-red-600 border border-red-500/20 dark:bg-red-500/15 dark:text-red-400 font-semibold w-fit">
+                            High Fatigue Risk
+                          </span>
+                          <span className="text-[10px] text-red-500 font-medium max-w-[190px] truncate" title={driver.blocking_reason}>
+                            {driver.blocking_reason || "Duty shift limit exceeded"}
+                          </span>
+                          <button
+                            onClick={() => handleOpenRestModal(driver)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-amber-500/15 text-amber-700 border border-amber-500/30 hover:bg-amber-500/25 transition dark:text-amber-300 w-fit"
+                            title="Assign mandatory rest period to restore wellness"
+                          >
+                            <Moon size={11} />
+                            Send to Rest
+                          </button>
+                        </div>
+                      ) : driver.is_assignable === false || driver.blocking_reason ? (
                         <div className="flex flex-col gap-0.5">
-                          <span className="apple-badge bg-red-500/10 text-red-600 border border-red-500/20 dark:bg-red-500/15 dark:text-red-400 font-semibold">
+                          <span className="apple-badge bg-red-500/10 text-red-600 border border-red-500/20 dark:bg-red-500/15 dark:text-red-400 font-semibold w-fit">
                             Blocked from Dispatch
                           </span>
                           <span className="text-[10px] text-red-500 font-medium max-w-[180px] truncate" title={driver.blocking_reason}>
@@ -499,6 +732,13 @@ export default function Drivers() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => handleOpenRestModal(driver)}
+                          className="p-1 rounded-md text-[#86868b] hover:text-purple-600 hover:bg-purple-500/10 transition dark:hover:text-purple-400"
+                          title="Assign Mandatory Rest"
+                        >
+                          <Moon size={14} />
+                        </button>
                         <button
                           onClick={() => handleOpenWellness(driver)}
                           className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"
@@ -974,6 +1214,310 @@ export default function Drivers() {
                   Close Audit
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Send to Mandatory Rest Modal */}
+      {showRestModal && driverForRest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg apple-card p-6 shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5">
+                <div className="grid h-8 w-8 place-items-center rounded-lg bg-purple-500/10 text-purple-600 dark:bg-purple-500/20 dark:text-purple-400">
+                  <Moon size={16} />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Assign Mandatory Rest
+                  </h2>
+                  <p className="text-xs text-[#86868b]">
+                    Fatigue mitigation & duty recovery for {driverForRest.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowRestModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {restError && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400 border border-red-500/20">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{restError}</span>
+              </div>
+            )}
+
+            {restSuccess && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-[#34c759]/10 p-3 text-xs text-[#34c759] border border-[#34c759]/20">
+                <CheckCircle2 size={14} className="shrink-0" />
+                <span>{restSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmitRest} className="mt-5 space-y-4">
+              {/* Current Driver Fatigue Summary */}
+              <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] dark:border-white/[0.06] dark:bg-white/[0.02] p-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">{driverForRest.name}</p>
+                  <p className="text-[11px] text-[#86868b] mt-0.5">
+                    {driverForRest.hours_driven_24h || 0}h driven in last 24h • {driverForRest.night_driving_hours || 0}h night shift
+                  </p>
+                </div>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold border ${
+                  (driverForRest.wellness_score ?? 100) >= 80
+                    ? "bg-[#34c759]/10 text-[#34c759] border-[#34c759]/25"
+                    : (driverForRest.wellness_score ?? 100) >= 60
+                    ? "bg-[#ff9500]/10 text-[#ff9500] border-[#ff9500]/25"
+                    : "bg-red-500/10 text-red-600 border-red-500/25"
+                }`}>
+                  <HeartPulse size={12} />
+                  {driverForRest.wellness_score ?? 100} / 100
+                </span>
+              </div>
+
+              {/* Rest Duration Selector */}
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  Select Rest Duration
+                </label>
+                <p className="text-[11px] text-[#86868b] mt-0.5 mb-2">
+                  Motor Transport Worker regulations mandate at least 8 continuous hours of rest.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { hours: 8, label: "8h Statutory" },
+                    { hours: 10, label: "10h Overnight" },
+                    { hours: 12, label: "12h Extended" },
+                    { hours: 24, label: "24h Full Day" },
+                  ].map((preset) => (
+                    <button
+                      key={preset.hours}
+                      type="button"
+                      onClick={() => setRestDurationHours(preset.hours)}
+                      className={`py-2 px-3 rounded-lg text-xs font-medium border text-center transition ${
+                        Number(restDurationHours) === preset.hours
+                          ? "border-purple-600 bg-purple-500/10 text-purple-600 dark:border-purple-400 dark:text-purple-300 font-semibold"
+                          : "border-black/[0.08] dark:border-white/[0.08] text-[#6e6e73] dark:text-[#86868b] hover:border-black/20"
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-2.5 flex items-center gap-2">
+                  <span className="text-xs text-[#86868b]">Or custom hours:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="48"
+                    step="0.5"
+                    value={restDurationHours}
+                    onChange={(e) => setRestDurationHours(Number(e.target.value))}
+                    className="w-24 apple-input text-xs py-1"
+                  />
+                  <span className="text-xs text-[#86868b]">hours</span>
+                </div>
+              </div>
+
+              {/* Dynamic Availability Display */}
+              <div className="rounded-xl border border-purple-500/30 bg-purple-500/[0.04] dark:bg-purple-500/[0.08] p-4">
+                <div className="flex items-start gap-3">
+                  <Clock size={18} className="text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-[11px] uppercase tracking-wider font-bold text-purple-600 dark:text-purple-300">
+                      Truck Assignment Availability
+                    </span>
+                    <p className="mt-1 text-sm font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      Available at: {calculatedAvailableDate}
+                    </p>
+                    <p className="mt-1 text-xs text-[#6e6e73] dark:text-[#86868b]">
+                      In exactly {restDurationHours} hours, driver status will automatically revert to Available with full 100% alertness recovery.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Optional Notes */}
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  Rest Location & Dispatch Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Resting at Gwalior Hub Rest Stop / Transshipment Yard"
+                  value={restNotes}
+                  onChange={(e) => setRestNotes(e.target.value)}
+                  className="apple-input text-xs mt-1.5"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-black/[0.06] dark:border-white/[0.08]">
+                <button
+                  type="button"
+                  onClick={() => setShowRestModal(false)}
+                  className="apple-btn-secondary text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingRest}
+                  className="apple-btn-primary text-xs bg-purple-600 hover:bg-purple-700 text-white"
+                >
+                  <Moon size={14} />
+                  {submittingRest ? "Assigning Rest..." : `Confirm ${restDurationHours}h Mandatory Rest`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Import Drivers Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl apple-card p-6 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5">
+                <div className="grid h-8 w-8 place-items-center rounded-lg bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/20 dark:text-[#2997ff]">
+                  <UploadCloud size={16} />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                    Bulk Import Fleet Drivers
+                  </h2>
+                  <p className="text-xs text-[#86868b]">
+                    Batch register drivers via CSV or JSON format
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBulkModal(false)}
+                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-4 flex-1 overflow-y-auto space-y-4">
+              {bulkError && (
+                <div className="flex items-center gap-2 rounded-lg bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400 border border-red-500/20">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{bulkError}</span>
+                </div>
+              )}
+
+              {bulkSuccess && (
+                <div className="flex items-center gap-2 rounded-lg bg-[#34c759]/10 p-3 text-xs text-[#34c759] border border-[#34c759]/20">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{bulkSuccess}</span>
+                </div>
+              )}
+
+              {/* Actions row: Upload file or Load template */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2">
+                  <label className="apple-btn-secondary text-xs cursor-pointer">
+                    <FileSpreadsheet size={13} />
+                    Upload CSV / JSON
+                    <input
+                      type="file"
+                      accept=".csv,.json,text/plain"
+                      onChange={handleFileBulkDrivers}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleLoadSampleDrivers}
+                    className="apple-btn-secondary text-xs"
+                  >
+                    Load Sample Template
+                  </button>
+                </div>
+                <span className="text-xs text-[#86868b]">
+                  {parsedBulkDrivers.length} driver{parsedBulkDrivers.length === 1 ? "" : "s"} detected
+                </span>
+              </div>
+
+              {/* CSV/JSON Textarea */}
+              <div>
+                <label className="text-xs font-medium text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  CSV / JSON Data
+                </label>
+                <textarea
+                  rows={6}
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  placeholder="Paste CSV rows (e.g. name,license_category,license_number,phone,experience_years) or JSON array..."
+                  className="mt-1.5 w-full rounded-xl border border-black/[0.1] bg-black/[0.02] p-3 font-mono text-xs text-[#1d1d1f] dark:border-white/[0.1] dark:bg-white/[0.02] dark:text-[#f5f5f7] outline-none focus:border-[#0071e3]"
+                />
+              </div>
+
+              {/* Live Preview Table */}
+              {parsedBulkDrivers.length > 0 && (
+                <div className="rounded-xl border border-black/[0.08] dark:border-white/[0.08] overflow-hidden">
+                  <div className="bg-black/[0.03] dark:bg-white/[0.03] px-3 py-2 border-b border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      Import Preview ({parsedBulkDrivers.length} records ready)
+                    </span>
+                    <span className="text-[10px] text-[#34c759] font-medium flex items-center gap-1">
+                      <Check size={12} /> Valid schema
+                    </span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-black/[0.02] dark:bg-white/[0.02] text-[10px] uppercase text-[#86868b]">
+                        <tr>
+                          <th className="px-3 py-1.5">Name</th>
+                          <th className="px-3 py-1.5">Category</th>
+                          <th className="px-3 py-1.5">License</th>
+                          <th className="px-3 py-1.5">Phone</th>
+                          <th className="px-3 py-1.5">Exp (Yrs)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                        {parsedBulkDrivers.map((d, idx) => (
+                          <tr key={idx}>
+                            <td className="px-3 py-1.5 font-medium">{d.name}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{d.license_category}</td>
+                            <td className="px-3 py-1.5 font-mono text-[11px] text-[#86868b]">{d.license_number || "—"}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{d.phone || "—"}</td>
+                            <td className="px-3 py-1.5 text-[#86868b]">{d.experience_years}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-3 mt-4 border-t border-black/[0.06] dark:border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="apple-btn-secondary text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmitBulkDrivers}
+                disabled={bulkSubmitting || parsedBulkDrivers.length === 0}
+                className="apple-btn-primary text-xs"
+              >
+                <UploadCloud size={14} />
+                {bulkSubmitting
+                  ? "Importing..."
+                  : `Import ${parsedBulkDrivers.length} Driver${parsedBulkDrivers.length === 1 ? "" : "s"}`}
+              </button>
             </div>
           </div>
         </div>
