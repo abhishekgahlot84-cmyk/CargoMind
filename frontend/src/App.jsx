@@ -46,6 +46,7 @@ export default function App() {
         >
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/trucks" element={<Trucks />} />
+          <Route path="/vehicles" element={<Navigate to="/trucks" replace />} />
           <Route path="/drivers" element={<Drivers />} />
           <Route path="/hubs" element={<Hubs />} />
           <Route path="/handovers" element={<Handovers />} />

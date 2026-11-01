@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { GoogleMap, useJsApiLoader } from "@react-google-maps/api";
 import {
   Package,
   Route,
@@ -7,25 +8,70 @@ import {
   AlertCircle,
   LoaderCircle,
   CheckCircle2,
-  Users,
-  Fuel,
-  Clock,
   ArrowRight,
-  Milestone,
   RefreshCw,
-  Wrench,
-  AlertTriangle,
   Code,
   RotateCcw,
   Sparkles,
-  ShieldCheck,
-  ShieldAlert,
-  ChevronRight,
-  MapPin,
-  TrendingDown,
   Navigation,
 } from "lucide-react";
 import api from "../services/api";
+import { useTheme } from "../context/ThemeContext";
+
+const mapContainerStyle = {
+  width: "100%",
+  height: "100%",
+  borderRadius: "1rem",
+};
+
+const DEFAULT_CENTER = { lat: 20.5937, lng: 78.9629 }; // Geographic center of India
+
+// Apple-inspired dark mode styling for Google Maps
+const appleDarkMapStyles = [
+  { elementType: "geometry", stylers: [{ color: "#161618" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#161618" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8e8e93" }] },
+  {
+    featureType: "administrative.locality",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#d1d1d6" }],
+  },
+  {
+    featureType: "poi",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#636366" }],
+  },
+  {
+    featureType: "road",
+    elementType: "geometry",
+    stylers: [{ color: "#242426" }],
+  },
+  {
+    featureType: "road",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#1c1c1e" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry",
+    stylers: [{ color: "#3a3a3c" }],
+  },
+  {
+    featureType: "road.highway",
+    elementType: "geometry.stroke",
+    stylers: [{ color: "#1c1c1e" }],
+  },
+  {
+    featureType: "water",
+    elementType: "geometry",
+    stylers: [{ color: "#000000" }],
+  },
+  {
+    featureType: "water",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#48484a" }],
+  },
+];
 
 export default function Optimization() {
   const [trucks, setTrucks] = useState([]);
@@ -221,7 +267,7 @@ export default function Optimization() {
         ai_reason: route.ai_reason,
       };
 
-      const res = await api.post("/optimization/confirm-route", payload);
+      await api.post("/optimization/confirm-route", payload);
       setConfirmSuccessMsg(
         `Route option '${route.tag}' confirmed! Persisted ${route.distance_km} km and ETA ${route.eta_display} to Trip #${alternativesResult.trip_id}.`
       );
@@ -239,6 +285,238 @@ export default function Optimization() {
     alternativesResult?.routes?.find((r) => r.id === selectedRouteId) ||
     alternativesResult?.routes?.[0] ||
     null;
+
+  const { resolvedTheme } = useTheme();
+  const envApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
+  const [apiKey] = useState(
+    localStorage.getItem("fleet_gmaps_key") || envApiKey
+  );
+
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: "google-map-script",
+    googleMapsApiKey: apiKey,
+    region: "IN",
+    language: "en",
+  });
+
+  const mapRef = useRef(null);
+  const polylinesRef = useRef([]);
+  const markersRef = useRef([]);
+  const infoWindowRef = useRef(null);
+
+  const clearMapOverlays = useCallback(() => {
+    if (infoWindowRef.current) {
+      infoWindowRef.current.close();
+      infoWindowRef.current = null;
+    }
+    if (markersRef.current && markersRef.current.length > 0) {
+      markersRef.current.forEach((marker) => {
+        if (marker && typeof marker.setMap === "function") {
+          marker.setMap(null);
+        }
+      });
+      markersRef.current = [];
+    }
+    if (polylinesRef.current && polylinesRef.current.length > 0) {
+      polylinesRef.current.forEach((polyline) => {
+        if (polyline && typeof polyline.setMap === "function") {
+          polyline.setMap(null);
+        }
+      });
+      polylinesRef.current = [];
+    }
+  }, []);
+
+  const onMapLoad = useCallback((mapInstance) => {
+    mapRef.current = mapInstance;
+  }, []);
+
+  const handleFitRoute = useCallback(() => {
+    if (!mapRef.current || !selectedRouteObj?.coordinates?.length || !window.google?.maps) return;
+    const bounds = new window.google.maps.LatLngBounds();
+    selectedRouteObj.coordinates.forEach((c) => {
+      bounds.extend({ lat: Number(c[1]), lng: Number(c[0]) });
+    });
+    mapRef.current.fitBounds(bounds, 50);
+  }, [selectedRouteObj]);
+
+  const getOriginMarkerIcon = useCallback(() => {
+    if (!window.google?.maps) return null;
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="15" fill="#0071e3" stroke="#ffffff" stroke-width="2.5"/>
+        <text x="18" y="23" font-size="13" font-weight="bold" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif">O</text>
+      </svg>
+    `;
+    return {
+      url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+      scaledSize: new window.google.maps.Size(36, 36),
+      anchor: new window.google.maps.Point(18, 18),
+    };
+  }, []);
+
+  const getDestMarkerIcon = useCallback(() => {
+    if (!window.google?.maps) return null;
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="15" fill="#34c759" stroke="#ffffff" stroke-width="2.5"/>
+        <text x="18" y="23" font-size="13" font-weight="bold" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif">D</text>
+      </svg>
+    `;
+    return {
+      url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+      scaledSize: new window.google.maps.Size(36, 36),
+      anchor: new window.google.maps.Point(18, 18),
+    };
+  }, []);
+
+  // Update map overlays whenever selected route, theme, or alternatives change
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || !window.google?.maps) return;
+
+    mapRef.current.setOptions({
+      styles: resolvedTheme === "dark" ? appleDarkMapStyles : [],
+    });
+
+    clearMapOverlays();
+
+    if (!alternativesResult?.routes?.length) return;
+
+    const bounds = new window.google.maps.LatLngBounds();
+    let hasCoords = false;
+
+    // 1. Draw non-selected alternative routes in muted gray
+    alternativesResult.routes.forEach((rt) => {
+      if (!rt.coordinates || rt.coordinates.length < 2 || rt.id === selectedRouteId) return;
+      const path = rt.coordinates.map((c) => ({
+        lat: Number(c[1]),
+        lng: Number(c[0]),
+      }));
+
+      const unselectedPolyline = new window.google.maps.Polyline({
+        path,
+        map: mapRef.current,
+        strokeColor: resolvedTheme === "dark" ? "#636366" : "#94a3b8",
+        strokeOpacity: 0.5,
+        strokeWeight: 3.5,
+        zIndex: 10,
+      });
+
+      unselectedPolyline.addListener("click", () => {
+        setSelectedRouteId(rt.id);
+      });
+
+      polylinesRef.current.push(unselectedPolyline);
+    });
+
+    // 2. Draw selected highway route
+    if (selectedRouteObj?.coordinates && selectedRouteObj.coordinates.length > 1) {
+      const selectedPath = selectedRouteObj.coordinates.map((c) => {
+        const pt = { lat: Number(c[1]), lng: Number(c[0]) };
+        bounds.extend(pt);
+        hasCoords = true;
+        return pt;
+      });
+
+      const routeColor =
+        selectedRouteId === "route_b"
+          ? resolvedTheme === "dark" ? "#2997ff" : "#0071e3"
+          : selectedRouteId === "route_c"
+          ? "#34c759"
+          : "#ff9500";
+
+      const selectedPolyline = new window.google.maps.Polyline({
+        path: selectedPath,
+        map: mapRef.current,
+        strokeColor: routeColor,
+        strokeOpacity: 0.95,
+        strokeWeight: 5,
+        zIndex: 25,
+      });
+
+      polylinesRef.current.push(selectedPolyline);
+
+      // 3. Add Origin and Destination Markers
+      const originPt = selectedPath[0];
+      const destPt = selectedPath[selectedPath.length - 1];
+
+      const currentTrip = activeTrips.find((t) => String(t.id) === String(selectedTripForAlternatives));
+      const originName = currentTrip?.pickup_location || "Origin (Start)";
+      const destName = currentTrip?.delivery_location || "Destination (End)";
+
+      const originMarker = new window.google.maps.Marker({
+        position: originPt,
+        map: mapRef.current,
+        icon: getOriginMarkerIcon(),
+        title: `Origin: ${originName}`,
+        zIndex: 35,
+      });
+
+      originMarker.addListener("click", () => {
+        if (infoWindowRef.current) infoWindowRef.current.close();
+        const iw = new window.google.maps.InfoWindow({
+          content: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 6px; font-size: 12px; color: #1d1d1f; max-width: 240px;">
+              <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #0071e3; margin-bottom: 2px;">● Origin Hub</div>
+              <div style="font-weight: 600; font-size: 13px;">${originName}</div>
+              <div style="font-size: 11px; color: #6e6e73; margin-top: 2px;">Lat: ${originPt.lat.toFixed(4)}, Lng: ${originPt.lng.toFixed(4)}</div>
+            </div>
+          `,
+        });
+        iw.open({ map: mapRef.current, anchor: originMarker });
+        infoWindowRef.current = iw;
+      });
+
+      markersRef.current.push(originMarker);
+
+      const destMarker = new window.google.maps.Marker({
+        position: destPt,
+        map: mapRef.current,
+        icon: getDestMarkerIcon(),
+        title: `Destination: ${destName}`,
+        zIndex: 35,
+      });
+
+      destMarker.addListener("click", () => {
+        if (infoWindowRef.current) infoWindowRef.current.close();
+        const iw = new window.google.maps.InfoWindow({
+          content: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 6px; font-size: 12px; color: #1d1d1f; max-width: 240px;">
+              <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #34c759; margin-bottom: 2px;">● Destination Hub</div>
+              <div style="font-weight: 600; font-size: 13px;">${destName}</div>
+              <div style="font-size: 11px; color: #6e6e73; margin-top: 2px;">Lat: ${destPt.lat.toFixed(4)}, Lng: ${destPt.lng.toFixed(4)}</div>
+            </div>
+          `,
+        });
+        iw.open({ map: mapRef.current, anchor: destMarker });
+        infoWindowRef.current = iw;
+      });
+
+      markersRef.current.push(destMarker);
+    }
+
+    if (hasCoords && mapRef.current) {
+      mapRef.current.fitBounds(bounds, 50);
+    }
+  }, [
+    isLoaded,
+    selectedRouteObj,
+    alternativesResult,
+    selectedRouteId,
+    resolvedTheme,
+    activeTrips,
+    selectedTripForAlternatives,
+    clearMapOverlays,
+    getOriginMarkerIcon,
+    getDestMarkerIcon,
+  ]);
+
+  // Clean overlays on unmount
+  useEffect(() => {
+    return () => {
+      clearMapOverlays();
+    };
+  }, [clearMapOverlays]);
 
   const actions = [
     {
@@ -488,74 +766,104 @@ export default function Optimization() {
                 </div>
               </div>
 
-              {/* Map Polyline Visualizer (Coordinates Preview) */}
+              {/* Map Polyline Visualizer (Interactive Google Map View) */}
               <div className="p-6">
-                <div className="relative h-64 w-full overflow-hidden rounded-2xl border border-black/[0.08] bg-[#0c1017] p-4 text-white">
-                  <div className="absolute top-3 left-3 z-10 rounded-lg bg-black/60 px-3 py-1.5 text-[11px] backdrop-blur-md">
-                    <span className="text-[#34c759]">● Live Corridor:</span> {selectedRouteObj?.coordinates?.length || 0} highway waypoints
+                <div className="relative h-[440px] w-full overflow-hidden rounded-2xl border border-black/[0.08] bg-[#0c1017] text-white dark:border-white/[0.08]">
+                  {/* Top-Left Live Corridor Badge */}
+                  <div className="pointer-events-none select-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-xl bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-md">
+                    <span className="inline-block h-2 w-2 rounded-full bg-[#34c759] animate-pulse" />
+                    <span>Live Corridor:</span>
+                    <span className="font-semibold">{selectedRouteObj?.coordinates?.length?.toLocaleString() || 0}</span>
+                    <span className="text-[#86868b]">highway waypoints</span>
+                    <span className="text-white/30">•</span>
+                    <span className="font-semibold text-[#2997ff]">{selectedRouteObj?.distance_km} km</span>
                   </div>
-                  <div className="absolute bottom-3 right-3 z-10 rounded-lg bg-black/60 px-3 py-1.5 text-[10px] font-mono text-[#86868b] backdrop-blur-md">
+
+                  {/* Top-Right Fit Route & Quick Center Control */}
+                  <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+                    <button
+                      onClick={handleFitRoute}
+                      title="Fit entire highway corridor in map view"
+                      className="flex items-center gap-1.5 rounded-xl bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg backdrop-blur-md transition-all hover:bg-black/90 active:scale-95"
+                    >
+                      <Navigation size={12} className="text-[#2997ff]" />
+                      <span>Fit Route</span>
+                    </button>
+                  </div>
+
+                  {/* Bottom-Left Route Alternative Switcher */}
+                  {alternativesResult?.routes?.length > 1 && (
+                    <div className="absolute bottom-3 left-3 z-10 hidden sm:flex items-center gap-1.5 rounded-xl bg-black/75 p-1.5 shadow-lg backdrop-blur-md">
+                      {alternativesResult.routes.map((rt) => {
+                        const isSel = rt.id === selectedRouteId;
+                        const routeLetter = rt.id.slice(-1).toUpperCase();
+                        let activeBg = "bg-[#0071e3] text-white";
+                        let inactiveText = "text-[#2997ff]";
+                        if (rt.id === "route_c") {
+                          activeBg = "bg-[#34c759] text-white";
+                          inactiveText = "text-[#34c759]";
+                        } else if (rt.id === "route_a") {
+                          activeBg = "bg-[#ff9500] text-white";
+                          inactiveText = "text-[#ff9500]";
+                        }
+
+                        return (
+                          <button
+                            key={rt.id}
+                            onClick={() => setSelectedRouteId(rt.id)}
+                            className={`rounded-lg px-2.5 py-1 text-[10px] font-semibold transition-all ${
+                              isSel ? activeBg : `${inactiveText} hover:bg-white/10`
+                            }`}
+                          >
+                            Route {routeLetter}: {rt.tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Bottom-Right Survey of India Compliance Badge */}
+                  <div className="pointer-events-none select-none absolute bottom-3 right-3 z-10 rounded-xl bg-black/75 px-3 py-1.5 text-[10px] font-mono text-[#86868b] shadow-lg backdrop-blur-md">
                     India Sovereign Territory (Survey of India Compliant)
                   </div>
 
-                  {/* SVG Route Projection */}
-                  {selectedRouteObj?.coordinates && selectedRouteObj.coordinates.length > 1 ? (
-                    <svg className="h-full w-full" viewBox="0 0 800 240" preserveAspectRatio="none">
-                      {/* Grid background lines */}
-                      <line x1="0" y1="60" x2="800" y2="60" stroke="#1f293d" strokeDasharray="4 4" />
-                      <line x1="0" y1="120" x2="800" y2="120" stroke="#1f293d" strokeDasharray="4 4" />
-                      <line x1="0" y1="180" x2="800" y2="180" stroke="#1f293d" strokeDasharray="4 4" />
-
-                      {/* Transform coordinates into SVG path */}
-                      {(() => {
-                        const coords = selectedRouteObj.coordinates;
-                        const lons = coords.map((c) => c[0]);
-                        const lats = coords.map((c) => c[1]);
-                        const minLon = Math.min(...lons);
-                        const maxLon = Math.max(...lons) || minLon + 1;
-                        const minLat = Math.min(...lats);
-                        const maxLat = Math.max(...lats) || minLat + 1;
-
-                        const pointsStr = coords
-                          .map((c) => {
-                            const x = 50 + ((c[0] - minLon) / (maxLon - minLon)) * 700;
-                            const y = 200 - ((c[1] - minLat) / (maxLat - minLat)) * 160;
-                            return `${x.toFixed(1)},${y.toFixed(1)}`;
-                          })
-                          .join(" ");
-
-                        const firstPt = coords[0];
-                        const lastPt = coords[coords.length - 1];
-                        const x0 = 50 + ((firstPt[0] - minLon) / (maxLon - minLon)) * 700;
-                        const y0 = 200 - ((firstPt[1] - minLat) / (maxLat - minLat)) * 160;
-                        const x1 = 50 + ((lastPt[0] - minLon) / (maxLon - minLon)) * 700;
-                        const y1 = 200 - ((lastPt[1] - minLat) / (maxLat - minLat)) * 160;
-
-                        return (
-                          <>
-                            {/* Highway Polyline */}
-                            <polyline
-                              fill="none"
-                              stroke={selectedRouteId === "route_b" ? "#3b79e9" : "#34c759"}
-                              strokeWidth="3.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              points={pointsStr}
-                            />
-                            {/* Start Pin */}
-                            <circle cx={x0} cy={y0} r="6" fill="#3b79e9" stroke="#ffffff" strokeWidth="2" />
-                            <text x={x0} y={y0 - 10} fill="#ffffff" fontSize="10" fontWeight="bold" textAnchor="middle">
-                              Origin
-                            </text>
-                            {/* Destination Pin */}
-                            <circle cx={x1} cy={y1} r="6" fill="#34c759" stroke="#ffffff" strokeWidth="2" />
-                            <text x={x1} y={y1 - 10} fill="#ffffff" fontSize="10" fontWeight="bold" textAnchor="middle">
-                              Destination
-                            </text>
-                          </>
-                        );
-                      })()}
-                    </svg>
+                  {/* Google Map / Fallback Visualizer */}
+                  {loadError ? (
+                    <div className="flex h-full flex-col items-center justify-center p-6 text-center">
+                      <AlertCircle size={28} className="text-red-500 mb-2" />
+                      <h4 className="text-xs font-semibold text-white">
+                        Google Maps Loading Error
+                      </h4>
+                      <p className="mt-1 text-[11px] text-[#86868b] max-w-sm">
+                        {loadError.message || "Invalid Google Maps API Key or restricted network permissions."}
+                      </p>
+                    </div>
+                  ) : !isLoaded ? (
+                    <div className="flex h-full flex-col items-center justify-center p-6 text-center">
+                      <LoaderCircle size={24} className="animate-spin text-[#2997ff] mb-2" />
+                      <span className="text-xs font-medium text-[#86868b]">
+                        Loading Google Maps highway satellite & road layers...
+                      </span>
+                    </div>
+                  ) : selectedRouteObj?.coordinates && selectedRouteObj.coordinates.length > 1 ? (
+                    <GoogleMap
+                      mapContainerStyle={mapContainerStyle}
+                      center={DEFAULT_CENTER}
+                      zoom={5}
+                      onLoad={onMapLoad}
+                      options={{
+                        streetViewControl: false,
+                        mapTypeControl: true,
+                        fullscreenControl: true,
+                        zoomControl: true,
+                        styles: resolvedTheme === "dark" ? appleDarkMapStyles : [],
+                        restriction: {
+                          latLngBounds: { north: 37.5, south: 6.5, west: 68.0, east: 97.5 },
+                          strictBounds: false,
+                        },
+                        minZoom: 4,
+                      }}
+                    />
                   ) : (
                     <div className="flex h-full items-center justify-center text-xs text-[#86868b]">
                       No polyline coordinates available
