@@ -1,9 +1,26 @@
+import re
 from fastapi import FastAPI
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database.connection import engine, Base
-from app.database import models
+# Explicitly import all models so every table is registered in Base.metadata before create_all
+from app.database.models import (  # noqa: F401
+    Company,
+    User,
+    Truck,
+    Driver,
+    Order,
+    Trip,
+    Maintenance,
+    GPSTracking,
+    TripDriverAssignment,
+    Hub,
+    DriverHandover,
+    Location,
+    WellnessHistory,
+    MaintenanceLog,
+)
 from app.routes import (
     auth,
     companies,
@@ -44,6 +61,11 @@ try:
         result = conn.execute(text("SELECT id FROM companies WHERE id = 1")).first()
         if not result:
             conn.execute(text("INSERT INTO companies (id, name, email, phone) VALUES (1, 'Fleet Default Org', 'admin@fleetai.com', '+1234567890')"))
+            if engine.dialect.name == "postgresql":
+                try:
+                    conn.execute(text("SELECT setval(pg_get_serial_sequence('companies', 'id'), coalesce(max(id), 1)) FROM companies"))
+                except Exception:
+                    pass
             conn.commit()
 except Exception as e:
     print("Default company seeding notice:", e)
@@ -79,11 +101,13 @@ def test_database():
             connection.execute(text("SELECT 1"))
 
         return {
-            "message": "Database connection successful"
+            "message": "Database connection successful",
+            "dialect": engine.dialect.name
         }
 
     except Exception as e:
+        safe_error = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", str(e))
         return {
             "message": "Database connection failed",
-            "error": str(e)
+            "error": safe_error
         }
