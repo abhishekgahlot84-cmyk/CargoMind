@@ -3,33 +3,86 @@ import re
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Load local environment variables from .env if present (safely ignored in production)
-load_dotenv()
+
+def is_production_environment() -> bool:
+    """
+    Check if running in a cloud/production environment like Render.
+    Render sets RENDER=true, RENDER_SERVICE_ID, RENDER_SERVICE_NAME, etc.
+    """
+    render_flag = os.getenv("RENDER", "").lower() in ("true", "1")
+    service_id = bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_SERVICE_NAME"))
+    env_flag = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+    return render_flag or service_id or env_flag
+
+
+# Only load local .env if NOT running in cloud production.
+# On Render, environment variables are injected directly by the platform and must never be overridden.
+if not is_production_environment():
+    load_dotenv(override=False)
 
 Base = declarative_base()
 
 
-def get_database_url() -> str:
+def get_database_url_and_source():
     """
     Resolve the database URL with the following priority:
     1. DATABASE_URL environment variable (Render / Cloud production)
     2. Discrete DB_* environment variables (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
     3. SQLite local development fallback (sqlite:///./fleet_local.db)
+
+    In production (Render), DATABASE_URL is strictly required. Localhost and SQLite
+    fallbacks are explicitly forbidden to prevent silent misconfiguration.
     """
-    raw_url = os.getenv("DATABASE_URL", "").strip()
+    is_prod = is_production_environment()
+
+    # 1. Primary: DATABASE_URL (and standard cloud variants)
+    raw_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("DATABASE_INTERNAL_URL")
+        or os.getenv("POSTGRES_URL")
+        or ""
+    ).strip().strip("'\"")
 
     if raw_url:
+        source = "DATABASE_URL environment variable"
+        normalized = raw_url
+
         # Render supplies PostgreSQL URLs starting with 'postgres://'.
         # SQLAlchemy 1.4+ / 2.0 requires 'postgresql://' or 'postgresql+psycopg2://'.
-        if raw_url.startswith("postgres://"):
-            raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
-        elif raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+psycopg2://"):
-            raw_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
-        return raw_url
+        if normalized.startswith("postgres://"):
+            normalized = normalized.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif normalized.startswith("postgresql://") and not normalized.startswith("postgresql+psycopg2://"):
+            normalized = normalized.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-    # Check discrete DB_* environment variables if configured
+        # In production, guard against accidental localhost configuration
+        if is_prod:
+            try:
+                parsed = make_url(normalized)
+                if parsed.host in ("localhost", "127.0.0.1", "::1"):
+                    raise RuntimeError(
+                        f"[Database] CRITICAL: DATABASE_URL is configured with localhost host '{parsed.host}'. "
+                        "Render Web Services cannot connect to localhost. "
+                        "Please configure DATABASE_URL with your Render PostgreSQL hostname (e.g. dpg-xxx-a)."
+                    )
+            except Exception as e:
+                if isinstance(e, RuntimeError):
+                    raise
+                pass
+
+        return normalized, source
+
+    # Production on Render MUST have DATABASE_URL; never fall back to localhost or SQLite!
+    if is_prod:
+        raise RuntimeError(
+            "[Database] CRITICAL: DATABASE_URL environment variable is missing on Render. "
+            "Production requires a PostgreSQL DATABASE_URL. "
+            "Please configure DATABASE_URL in your Render Web Service dashboard."
+        )
+
+    # 2. Check discrete DB_* environment variables (local development only)
     db_host = os.getenv("DB_HOST", "").strip()
     db_port = os.getenv("DB_PORT", "").strip()
     db_name = os.getenv("DB_NAME", "").strip()
@@ -37,15 +90,52 @@ def get_database_url() -> str:
     db_password = os.getenv("DB_PASSWORD", "").strip()
 
     if db_host and db_port and db_name and db_user and db_password:
-        return f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        return (
+            f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}",
+            "Discrete DB_* environment variables",
+        )
 
-    # Default local development SQLite database
-    return "sqlite:///./fleet_local.db"
+    # 3. Default local development SQLite database
+    return "sqlite:///./fleet_local.db", "Local SQLite development fallback"
+
+
+def log_safe_diagnostics(db_url: str, source: str):
+    """
+    Log safe diagnostics required for verifying configuration in Render logs.
+    Never exposes username, password, or sensitive tokens.
+    """
+    has_db_url = bool(
+        os.getenv("DATABASE_URL")
+        or os.getenv("DATABASE_INTERNAL_URL")
+        or os.getenv("POSTGRES_URL")
+    )
+
+    try:
+        parsed = make_url(db_url)
+        host = parsed.host if parsed.host else "(local file / SQLite)"
+        dialect = parsed.get_backend_name()
+        driver = parsed.get_driver_name()
+    except Exception:
+        host = "unknown"
+        dialect = "unknown"
+        driver = "unknown"
+
+    print("==================================================")
+    print("[Database Configuration Diagnostics]")
+    print(f"  DATABASE_URL configured : {has_db_url}")
+    print(f"  Configuration source    : {source}")
+    print(f"  Selected database host  : {host}")
+    print(f"  SQLAlchemy dialect      : {dialect}")
+    print(f"  SQLAlchemy driver       : {driver}")
+    print("==================================================")
 
 
 def init_engine():
-    db_url = get_database_url()
-    is_render = os.getenv("RENDER") == "true" or os.getenv("ENVIRONMENT") == "production"
+    db_url, source = get_database_url_and_source()
+    is_prod = is_production_environment()
+
+    # Emit safe diagnostics to logs
+    log_safe_diagnostics(db_url, source)
 
     if db_url.startswith("sqlite"):
         return create_engine(
@@ -58,8 +148,8 @@ def init_engine():
         "connect_timeout": 10
     }
 
-    # In Render production, connect directly to PostgreSQL with pool resilience
-    if is_render:
+    # In production on Render: connect directly to PostgreSQL with pool resilience
+    if is_prod:
         return create_engine(
             db_url,
             pool_pre_ping=True,
