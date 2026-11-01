@@ -7,7 +7,6 @@ import {
   Radio,
   MapPin,
   Clock,
-  Key,
   X,
   User,
   Phone,
@@ -75,14 +74,14 @@ const appleDarkMapStyles = [
   },
 ];
 
+const BUILTIN_GOOGLE_MAPS_KEY = "AIzaSyDVV-tzUZvDg7HMLUz8_BEkNLAzbZPc-2U";
+
 export default function GPSTracking() {
   const { resolvedTheme } = useTheme();
-  const envApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
-  const [apiKey, setApiKey] = useState(
-    localStorage.getItem("fleet_gmaps_key") || envApiKey
-  );
-  const [customKeyInput, setCustomKeyInput] = useState("");
-  const [showKeyModal, setShowKeyModal] = useState(false);
+  const apiKey =
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
+    localStorage.getItem("fleet_gmaps_key") ||
+    BUILTIN_GOOGLE_MAPS_KEY;
   const [showSimulationModal, setShowSimulationModal] = useState(false);
 
   const { isLoaded, loadError } = useJsApiLoader({
@@ -677,16 +676,6 @@ export default function GPSTracking() {
     [handleBackToOverview]
   );
 
-  const handleSaveKey = (e) => {
-    e.preventDefault();
-    if (customKeyInput.trim()) {
-      localStorage.setItem("fleet_gmaps_key", customKeyInput.trim());
-      setApiKey(customKeyInput.trim());
-      setShowKeyModal(false);
-      window.location.reload();
-    }
-  };
-
   return (
     <div className="flex h-[calc(100vh-4rem)] min-w-0 flex-col p-4 sm:p-6 lg:h-screen lg:flex-row lg:gap-6 text-[#1d1d1f] dark:text-[#f5f5f7]">
       {/* Sidebar: Vehicle & GPS Telemetry */}
@@ -755,27 +744,6 @@ export default function GPSTracking() {
             <span className="text-[11px] font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
               {fleetList.length} Vehicles Online
             </span>
-          </div>
-        )}
-
-        {/* Missing API Key Notice */}
-        {!apiKey && (
-          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3.5 text-xs text-[#ff9500] dark:text-[#ff9f0a]">
-            <div className="flex items-start gap-2">
-              <Key size={14} className="mt-0.5 shrink-0" />
-              <div>
-                <span className="font-semibold">Google Maps API Key</span>
-                <p className="mt-1 text-[11px] leading-relaxed text-[#86868b]">
-                  Add <code className="bg-black/[0.05] dark:bg-white/[0.1] px-1 rounded">VITE_GOOGLE_MAPS_API_KEY</code> in <code className="bg-black/[0.05] dark:bg-white/[0.1] px-1 rounded">.env</code> or configure below:
-                </p>
-                <button
-                  onClick={() => setShowKeyModal(true)}
-                  className="apple-btn-primary mt-2 text-[11px] py-1 px-3"
-                >
-                  Configure Key
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
@@ -1015,13 +983,6 @@ export default function GPSTracking() {
             />
             Auto-refresh (6s)
           </label>
-
-          <button
-            onClick={() => setShowKeyModal(true)}
-            className="text-xs text-[#0071e3] hover:underline dark:text-[#2997ff]"
-          >
-            Configure Key
-          </button>
         </div>
       </div>
 
@@ -1065,25 +1026,7 @@ export default function GPSTracking() {
           </div>
         </div>
 
-        {!apiKey ? (
-          <div className="flex h-full w-full flex-col items-center justify-center rounded-2xl bg-black/[0.015] p-6 text-center dark:bg-white/[0.01]">
-            <div className="grid h-14 w-14 place-items-center rounded-2xl bg-[#0071e3]/10 text-[#0071e3] mb-4 dark:bg-[#2997ff]/15 dark:text-[#2997ff]">
-              <MapPin size={28} />
-            </div>
-            <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-              Interactive Google Maps Surface
-            </h2>
-            <p className="mt-1.5 max-w-sm text-xs text-[#6e6e73] dark:text-[#86868b]">
-              Provide your Google Maps API key to render vector polylines, breadcrumb GPS history, and turn-by-turn road geometry.
-            </p>
-            <button
-              onClick={() => setShowKeyModal(true)}
-              className="apple-btn-primary mt-5 text-xs"
-            >
-              Configure API Key
-            </button>
-          </div>
-        ) : !isLoaded ? (
+        {!isLoaded ? (
           <div className="flex h-full w-full items-center justify-center text-[#86868b]">
             <div className="text-center">
               <RefreshCw size={24} className="animate-spin mx-auto text-[#0071e3] dark:text-[#2997ff] mb-2" />
@@ -1100,10 +1043,10 @@ export default function GPSTracking() {
               {loadError.message || "Invalid Google Maps API Key or restricted permissions."}
             </p>
             <button
-              onClick={() => setShowKeyModal(true)}
+              onClick={() => window.location.reload()}
               className="mt-4 text-xs font-semibold text-[#0071e3] hover:underline dark:text-[#2997ff]"
             >
-              Update API Key
+              Retry Connection
             </button>
           </div>
         ) : (
@@ -1175,56 +1118,6 @@ export default function GPSTracking() {
                 Close
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* API Key Modal */}
-      {showKeyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md apple-card p-6 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-black/[0.06] dark:border-white/[0.08]">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                Google Maps API Key
-              </h3>
-              <button
-                onClick={() => setShowKeyModal(false)}
-                className="text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <p className="mt-3 text-xs text-[#6e6e73] dark:text-[#86868b]">
-              Enter your Google Maps JavaScript API key. It will be stored in your browser session.
-            </p>
-
-            <form onSubmit={handleSaveKey} className="mt-4">
-              <input
-                type="text"
-                value={customKeyInput}
-                onChange={(e) => setCustomKeyInput(e.target.value)}
-                placeholder="AIzaSy..."
-                className="apple-input font-mono text-xs"
-                required
-              />
-
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowKeyModal(false)}
-                  className="apple-btn-secondary text-xs"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="apple-btn-primary text-xs"
-                >
-                  Save & Reload
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

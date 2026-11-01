@@ -90,7 +90,10 @@ export default function Settings() {
     return defaults;
   });
 
-  const googleMapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
+  const googleMapsKey =
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
+    localStorage.getItem("fleet_gmaps_key") ||
+    "AIzaSyDVV-tzUZvDg7HMLUz8_BEkNLAzbZPc-2U";
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
   useEffect(() => {

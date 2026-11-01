@@ -286,11 +286,12 @@ export default function Optimization() {
     alternativesResult?.routes?.[0] ||
     null;
 
+  const BUILTIN_GOOGLE_MAPS_KEY = "AIzaSyDVV-tzUZvDg7HMLUz8_BEkNLAzbZPc-2U";
   const { resolvedTheme } = useTheme();
-  const envApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
-  const [apiKey] = useState(
-    localStorage.getItem("fleet_gmaps_key") || envApiKey
-  );
+  const apiKey =
+    import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
+    localStorage.getItem("fleet_gmaps_key") ||
+    BUILTIN_GOOGLE_MAPS_KEY;
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: "google-map-script",
