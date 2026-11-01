@@ -34,8 +34,8 @@ export default function Login() {
     return params.get("mode") === "signup";
   });
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("admin@cargomind.ai");
-  const [password, setPassword] = useState("Abhishek_93");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleBtnRendered, setGoogleBtnRendered] = useState(false);
