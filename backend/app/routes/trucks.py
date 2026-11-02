@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from app.database.connection import get_db
 from app.database.models import Truck, Trip, User
@@ -44,12 +44,12 @@ class TruckUpdate(BaseModel):
 
 class BulkTruckItem(BaseModel):
     registration_number: str
-    capacity: Optional[int] = 8000
+    capacity: Optional[Union[float, int]] = 8000
     fuel_type: Optional[str] = "Diesel"
-    fuel_efficiency: Optional[int] = 4
+    fuel_efficiency: Optional[Union[float, int]] = 4.0
     mileage_kmpl: Optional[float] = 4.0
     model: Optional[str] = "Tata Prima 5530.S"
-    year: Optional[int] = 2023
+    year: Optional[Union[float, int]] = 2023
     notes: Optional[str] = None
     status: Optional[str] = "available"
     max_speed_kmph: Optional[float] = 60.0
@@ -181,18 +181,21 @@ def bulk_create_trucks(
             continue
 
         valid_max, valid_avg = validate_truck_speeds(item.max_speed_kmph, item.avg_speed_kmph)
-        eff_mileage = float(item.mileage_kmpl) if item.mileage_kmpl else (float(item.fuel_efficiency) if item.fuel_efficiency else 4.0)
+        eff_mileage = float(item.mileage_kmpl) if item.mileage_kmpl is not None else (float(item.fuel_efficiency) if item.fuel_efficiency is not None else 4.0)
+        eff_int = int(round(float(item.fuel_efficiency))) if item.fuel_efficiency is not None else int(round(eff_mileage))
+        cap = int(round(float(item.capacity))) if item.capacity is not None else 8000
+        yr = int(round(float(item.year))) if item.year is not None else 2023
 
         truck = Truck(
             registration_number=reg,
-            capacity=item.capacity if item.capacity else 8000,
+            capacity=cap,
             fuel_type=item.fuel_type or "Diesel",
-            fuel_efficiency=item.fuel_efficiency or int(eff_mileage),
+            fuel_efficiency=eff_int,
             mileage_kmpl=eff_mileage,
             trips_since_service=0,
             km_since_service=0.0,
             model=item.model or "Heavy Cargo Hauler",
-            year=item.year or 2023,
+            year=yr,
             notes=item.notes,
             company_id=curr_company_id,
             user_id=curr_user_id,

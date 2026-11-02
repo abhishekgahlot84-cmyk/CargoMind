@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from app.database.connection import get_db
 from app.database.models import Driver, Trip, User, WellnessHistory
@@ -26,9 +26,9 @@ class BulkDriverItem(BaseModel):
     license_category: Optional[str] = "Heavy (HCV)"
     license_number: Optional[str] = None
     phone: Optional[str] = None
-    experience_years: Optional[int] = 3
-    working_hours: Optional[int] = 0
-    rest_hours: Optional[int] = 8
+    experience_years: Optional[Union[float, int]] = 3
+    working_hours: Optional[Union[float, int]] = 0
+    rest_hours: Optional[Union[float, int]] = 8
     notes: Optional[str] = None
     status: Optional[str] = "available"
 
@@ -431,9 +431,9 @@ def bulk_create_drivers(
             license_category=item.license_category or "Heavy (HCV)",
             license_number=item.license_number.strip() if item.license_number else None,
             phone=item.phone.strip() if item.phone else None,
-            experience_years=item.experience_years if item.experience_years is not None else 3,
-            working_hours=item.working_hours or 0,
-            rest_hours=item.rest_hours if item.rest_hours is not None else 8,
+            experience_years=int(round(float(item.experience_years))) if item.experience_years is not None else 3,
+            working_hours=int(round(float(item.working_hours or 0))),
+            rest_hours=int(round(float(item.rest_hours))) if item.rest_hours is not None else 8,
             notes=item.notes,
             company_id=curr_company_id,
             user_id=curr_user_id,

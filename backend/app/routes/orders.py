@@ -2,7 +2,7 @@ from datetime import datetime, timezone, date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from typing import Optional, List, Union
 
 from app.database.connection import get_db
 from app.database.models import Order, Trip, CARGO_CATEGORIES, User
@@ -440,7 +440,7 @@ def create_order(
 class BulkOrderItem(BaseModel):
     pickup_location: str
     delivery_location: str
-    weight: int
+    weight: Union[float, int]
     deadline: Optional[str] = None
     delivery_deadline: Optional[str] = None
     cargo_category: Optional[str] = "General Cargo"
@@ -448,9 +448,9 @@ class BulkOrderItem(BaseModel):
     width: Optional[float] = 100.0
     height: Optional[float] = 100.0
     dimension_unit: Optional[str] = "cm"
-    package_count: Optional[int] = 1
+    package_count: Optional[Union[float, int]] = 1
     volume_m3: Optional[float] = None
-    priority: Optional[int] = 0
+    priority: Optional[Union[float, int]] = 0
     is_fragile: Optional[bool] = False
     is_hazardous: Optional[bool] = False
     is_perishable: Optional[bool] = False
@@ -558,7 +558,7 @@ def bulk_create_orders(
         order = Order(
             pickup_location=p_loc,
             delivery_location=d_loc,
-            weight=int(item.weight) if item.weight else 1000,
+            weight=int(round(float(item.weight))) if item.weight else 1000,
             deadline=deadline_str,
             delivery_deadline=deadline_str,
             distance_km=dist,
@@ -567,7 +567,7 @@ def bulk_create_orders(
             delivery_latitude=d_lat,
             delivery_longitude=d_lon,
             cargo_category=item.cargo_category or "General Cargo",
-            priority=item.priority or 0,
+            priority=int(round(float(item.priority))) if item.priority is not None else 0,
             is_fragile=bool(item.is_fragile),
             is_hazardous=bool(item.is_hazardous),
             is_perishable=bool(item.is_perishable),
@@ -580,7 +580,7 @@ def bulk_create_orders(
             width=item.width,
             height=item.height,
             dimension_unit=item.dimension_unit or "cm",
-            package_count=item.package_count or 1,
+            package_count=int(round(float(item.package_count))) if item.package_count else 1,
             company_id=curr_company_id,
             user_id=curr_user_id,
             status="pending"
@@ -640,18 +640,24 @@ def get_orders(
 @router.get("/{order_id}/tracking")
 def get_order_tracking(
     order_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     order = (
         db.query(Order)
-        .filter(Order.id == order_id)
+        .filter(
+            Order.id == order_id,
+            (Order.company_id == comp_id) | (Order.user_id == user_id)
+        )
         .first()
     )
 
     if not order:
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found or does not belong to your company"
         )
 
     trip = (
@@ -674,18 +680,24 @@ def get_order_tracking(
 @router.get("/{order_id}")
 def get_order(
     order_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     order = (
         db.query(Order)
-        .filter(Order.id == order_id)
+        .filter(
+            Order.id == order_id,
+            (Order.company_id == comp_id) | (Order.user_id == user_id)
+        )
         .first()
     )
 
     if not order:
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found or does not belong to your company"
         )
 
     return _order_dict(order, recalculate_urgency=True)

@@ -564,7 +564,17 @@ Hyderabad,Nagpur,1900,Pharmaceuticals,80,60,60,8,true,true`;
     } catch (err) {
       console.error("Bulk orders import failed:", err);
       const detail = err.response?.data?.detail;
-      setBulkError(typeof detail === "string" ? detail : "Failed to import consignments in bulk.");
+      let errorMsg = "Failed to import consignments in bulk.";
+      if (typeof detail === "string") {
+        errorMsg = detail;
+      } else if (Array.isArray(detail)) {
+        errorMsg = detail
+          .map((d) => (d.msg ? `${d.loc ? d.loc.slice(-1)[0] + ": " : ""}${d.msg}` : JSON.stringify(d)))
+          .join(", ");
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setBulkError(errorMsg);
     } finally {
       setBulkSubmitting(false);
     }

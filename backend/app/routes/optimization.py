@@ -236,16 +236,18 @@ def calculate_route(
     truck_id: int = None,
     driver_id: int = None,
     fuel_price: int = 90,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
     # Find the requested truck
     truck = None
     if truck_id:
-        truck = db.query(Truck).filter(Truck.id == truck_id).first()
+        truck = db.query(Truck).filter(Truck.id == truck_id, Truck.company_id == comp_id).first()
         if not truck:
-            return {"status": "error", "message": f"Truck #{truck_id} not found"}
+            return {"status": "error", "message": f"Truck #{truck_id} not found or does not belong to your company"}
     else:
-        available_trucks = get_truly_available_trucks(db)
+        available_trucks = get_truly_available_trucks(db, company_id=comp_id)
         if not available_trucks:
             return {"status": "no_trucks", "message": "No available trucks found"}
         truck = available_trucks[0]
@@ -253,11 +255,11 @@ def calculate_route(
     # Find the requested driver
     driver = None
     if driver_id:
-        driver = db.query(Driver).filter(Driver.id == driver_id).first()
+        driver = db.query(Driver).filter(Driver.id == driver_id, Driver.company_id == comp_id).first()
         if not driver:
-            return {"status": "error", "message": f"Driver #{driver_id} not found"}
+            return {"status": "error", "message": f"Driver #{driver_id} not found or does not belong to your company"}
     else:
-        available_drivers = get_truly_available_drivers(db)
+        available_drivers = get_truly_available_drivers(db, company_id=comp_id)
         driver = available_drivers[0] if available_drivers else None
 
     # Check if this truck already has an active trip
@@ -1099,9 +1101,20 @@ def confirm_route_endpoint(
     """
     Persist the selected route alternative to the Trip record.
     """
-    trip = db.query(Trip).filter(Trip.id == req.trip_id).first()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    trip = (
+        db.query(Trip)
+        .outerjoin(Truck, Trip.truck_id == Truck.id)
+        .outerjoin(Order, Trip.order_id == Order.id)
+        .filter(
+            Trip.id == req.trip_id,
+            (Trip.user_id == user_id) | (Truck.company_id == comp_id) | (Order.company_id == comp_id)
+        )
+        .first()
+    )
     if not trip:
-        raise HTTPException(status_code=404, detail=f"Trip #{req.trip_id} not found")
+        raise HTTPException(status_code=404, detail=f"Trip #{req.trip_id} not found or does not belong to your company")
 
     trip.distance = int(round(req.distance_km))
     trip.estimated_time = int(round(req.estimated_time_minutes))

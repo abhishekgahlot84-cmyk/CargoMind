@@ -460,7 +460,17 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
     } catch (err) {
       console.error("Bulk truck import failed:", err);
       const detail = err.response?.data?.detail;
-      setBulkError(typeof detail === "string" ? detail : "Failed to import trucks in bulk.");
+      let errorMsg = "Failed to import trucks in bulk.";
+      if (typeof detail === "string") {
+        errorMsg = detail;
+      } else if (Array.isArray(detail)) {
+        errorMsg = detail
+          .map((d) => (d.msg ? `${d.loc ? d.loc.slice(-1)[0] + ": " : ""}${d.msg}` : JSON.stringify(d)))
+          .join(", ");
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setBulkError(errorMsg);
     } finally {
       setBulkSubmitting(false);
     }

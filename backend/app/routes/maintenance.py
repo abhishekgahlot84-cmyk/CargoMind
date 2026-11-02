@@ -79,7 +79,9 @@ def get_maintenance_suggestions_endpoint(
     Compute real-time maintenance suggestion cards for trucks across the fleet.
     Sorted by urgency ('due' critical first, then 'warning' recommended).
     """
-    trucks = db.query(Truck).all()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    trucks = db.query(Truck).filter((Truck.company_id == comp_id) | (Truck.user_id == user_id)).all()
 
     # Active trips lookup
     active_trips = db.query(Trip).filter(
@@ -155,7 +157,12 @@ def send_truck_to_maintenance_endpoint(
     Transition truck status to 'maintenance' and safely reassign any planned trips.
     Blocks if vehicle is actively mid-transit on an 'in_progress' trip.
     """
-    truck = db.query(Truck).filter(Truck.id == req.truck_id).first()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    truck = db.query(Truck).filter(
+        Truck.id == req.truck_id,
+        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+    ).first()
     if not truck:
         raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found")
 
@@ -250,7 +257,12 @@ def mark_truck_maintained_endpoint(
     Mark a truck as maintained: resets service counters, records service date,
     writes to maintenance log, and returns vehicle to 'available' status.
     """
-    truck = db.query(Truck).filter(Truck.id == req.truck_id).first()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    truck = db.query(Truck).filter(
+        Truck.id == req.truck_id,
+        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+    ).first()
     if not truck:
         raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found")
 
@@ -310,10 +322,17 @@ def mark_truck_maintained_endpoint(
 @router.get("/logs/{truck_id}")
 def get_truck_maintenance_logs(
     truck_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
     """Retrieve full maintenance history log for a truck."""
-    query = db.query(MaintenanceLog)
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    query = (
+        db.query(MaintenanceLog)
+        .join(Truck, MaintenanceLog.truck_id == Truck.id)
+        .filter((Truck.company_id == comp_id) | (Truck.user_id == user_id))
+    )
     if truck_id > 0:
         query = query.filter(MaintenanceLog.truck_id == truck_id)
 
@@ -338,14 +357,20 @@ def get_truck_maintenance_logs(
 @router.get("/replacements/{truck_id}")
 def get_replacement_options_endpoint(
     truck_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
     """
     Returns available replacement trucks with similar or larger capacity.
     """
-    target = db.query(Truck).filter(Truck.id == truck_id).first()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    target = db.query(Truck).filter(
+        Truck.id == truck_id,
+        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+    ).first()
     if not target:
-        raise HTTPException(status_code=404, detail="Truck not found")
+        raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
 
     avail = get_available_trucks(db, company_id=target.company_id)
     candidates = [

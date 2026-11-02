@@ -405,7 +405,17 @@ Suresh Patel,Hazardous Materials Endorsement,GJ0120170067890,+91 98250 67890,10,
     } catch (err) {
       console.error("Bulk driver import failed:", err);
       const detail = err.response?.data?.detail;
-      setBulkError(typeof detail === "string" ? detail : "Failed to import drivers in bulk.");
+      let errorMsg = "Failed to import drivers in bulk.";
+      if (typeof detail === "string") {
+        errorMsg = detail;
+      } else if (Array.isArray(detail)) {
+        errorMsg = detail
+          .map((d) => (d.msg ? `${d.loc ? d.loc.slice(-1)[0] + ": " : ""}${d.msg}` : JSON.stringify(d)))
+          .join(", ");
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setBulkError(errorMsg);
     } finally {
       setBulkSubmitting(false);
     }

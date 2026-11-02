@@ -276,11 +276,13 @@ def get_all_trips(
         .outerjoin(Order, Trip.order_id == Order.id)
     )
 
-    # Admins or default fleet org see all recorded trips (e.g. Trip 11)
-    if current_user and getattr(current_user, "role", "") != "admin" and getattr(current_user, "company_id", 1) not in (None, 1):
-        query = query.filter(
-            (Truck.company_id == current_user.company_id) | (Truck.company_id == None) | (Order.company_id == current_user.company_id)
-        )
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    query = query.filter(
+        (Trip.user_id == user_id) |
+        (Truck.company_id == comp_id) |
+        (Order.company_id == comp_id)
+    )
 
     trips = query.order_by(Trip.id.desc()).all()
 
@@ -313,18 +315,21 @@ def get_all_trips(
 @router.get("/truck/{truck_id}")
 def get_trips_by_truck(
     truck_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     truck = (
         db.query(Truck)
-        .filter(Truck.id == truck_id)
+        .filter(Truck.id == truck_id, (Truck.company_id == comp_id) | (Truck.user_id == user_id))
         .first()
     )
 
     if not truck:
         raise HTTPException(
             status_code=404,
-            detail="Truck not found"
+            detail="Truck not found or does not belong to your company"
         )
 
     trips = (
@@ -338,18 +343,21 @@ def get_trips_by_truck(
 @router.get("/driver/{driver_id}")
 def get_trips_by_driver(
     driver_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     driver = (
         db.query(Driver)
-        .filter(Driver.id == driver_id)
+        .filter(Driver.id == driver_id, (Driver.company_id == comp_id) | (Driver.user_id == user_id))
         .first()
     )
 
     if not driver:
         raise HTTPException(
             status_code=404,
-            detail="Driver not found"
+            detail="Driver not found or does not belong to your company"
         )
 
     trips = (
@@ -363,18 +371,21 @@ def get_trips_by_driver(
 @router.get("/order/{order_id}")
 def get_trips_by_order(
     order_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     order = (
         db.query(Order)
-        .filter(Order.id == order_id)
+        .filter(Order.id == order_id, (Order.company_id == comp_id) | (Order.user_id == user_id))
         .first()
     )
 
     if not order:
         raise HTTPException(
             status_code=404,
-            detail="Order not found"
+            detail="Order not found or does not belong to your company"
         )
 
     trips = (
@@ -388,11 +399,19 @@ def get_trips_by_order(
 @router.get("/{trip_id}")
 def get_trip(
     trip_id: int,
+    current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
     trip = (
         db.query(Trip)
-        .filter(Trip.id == trip_id)
+        .outerjoin(Truck, Trip.truck_id == Truck.id)
+        .outerjoin(Order, Trip.order_id == Order.id)
+        .filter(
+            Trip.id == trip_id,
+            (Trip.user_id == user_id) | (Truck.company_id == comp_id) | (Order.company_id == comp_id)
+        )
         .first()
     )
 

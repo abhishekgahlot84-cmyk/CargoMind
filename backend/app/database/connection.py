@@ -187,14 +187,19 @@ try:
     from sqlalchemy import text
     with engine.connect() as _conn:
         if engine.dialect.name == "sqlite":
-            _tbl = _conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='drivers';")).first()
-            if _tbl:
-                _cols = [r[1] for r in _conn.execute(text("PRAGMA table_info(drivers);")).fetchall()]
-                if "rest_until" not in _cols:
-                    _conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
-                    _conn.commit()
+            for _t in ["trucks", "drivers", "orders", "trips", "hubs"]:
+                _tbl = _conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{_t}';")).first()
+                if _tbl:
+                    _cols = [r[1] for r in _conn.execute(text(f"PRAGMA table_info({_t});")).fetchall()]
+                    if "user_id" not in _cols:
+                        _conn.execute(text(f"ALTER TABLE {_t} ADD COLUMN user_id INTEGER;"))
+                    if _t == "drivers" and "rest_until" not in _cols:
+                        _conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
+            _conn.commit()
         elif engine.dialect.name == "postgresql":
             _conn.execute(text("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS rest_until VARCHAR(50);"))
+            for _t in ["trucks", "drivers", "orders", "trips", "hubs"]:
+                _conn.execute(text(f"ALTER TABLE {_t} ADD COLUMN IF NOT EXISTS user_id INTEGER;"))
             try:
                 _conn.execute(text("ALTER TABLE orders ALTER COLUMN distance_km TYPE DOUBLE PRECISION;"))
                 _conn.execute(text("ALTER TABLE trips ALTER COLUMN distance TYPE DOUBLE PRECISION;"))
