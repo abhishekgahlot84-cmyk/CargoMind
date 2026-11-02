@@ -73,9 +73,9 @@ def _driver_dict(driver, db: Optional[Session] = None):
 def create_driver(
     name: str,
     license_category: str,
-    experience_years: int = 0,
-    working_hours: int = 0,
-    rest_hours: int = 0,
+    experience_years: float = 0.0,
+    working_hours: float = 0.0,
+    rest_hours: float = 0.0,
     license_number: str = None,
     phone: str = None,
     notes: str = None,
@@ -86,13 +86,13 @@ def create_driver(
     target_company_id = company_id if (company_id and company_id != 1) else current_user.company_id
 
     driver = Driver(
-        name=name,
+        name=name.strip(),
         license_category=license_category,
-        experience_years=experience_years,
-        working_hours=working_hours,
-        rest_hours=rest_hours,
-        license_number=license_number,
-        phone=phone,
+        experience_years=int(round(float(experience_years))) if experience_years is not None else 0,
+        working_hours=int(round(float(working_hours))) if working_hours is not None else 0,
+        rest_hours=int(round(float(rest_hours))) if rest_hours is not None else 0,
+        license_number=license_number.strip() if license_number else None,
+        phone=phone.strip() if phone else None,
         notes=notes,
         company_id=target_company_id,
         user_id=current_user.id,
@@ -148,38 +148,46 @@ def update_driver(
     license_category: str = None,
     license_number: str = None,
     phone: str = None,
-    experience_years: int = None,
-    working_hours: int = None,
-    rest_hours: int = None,
+    experience_years: float = None,
+    working_hours: float = None,
+    rest_hours: float = None,
     notes: str = None,
     status: str = None,
     current_user: User = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    driver = db.query(Driver).filter(Driver.id == driver_id, Driver.company_id == current_user.company_id).first()
+    comp_id = current_user.company_id if current_user else 1
+    user_id = current_user.id if current_user else None
+    driver = db.query(Driver).filter(
+        Driver.id == driver_id,
+        (Driver.company_id == comp_id) | (Driver.user_id == user_id)
+    ).first()
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
 
     if name is not None:
-        driver.name = name
+        driver.name = name.strip()
     if license_category is not None:
         driver.license_category = license_category
     if license_number is not None:
-        driver.license_number = license_number
+        driver.license_number = license_number.strip() if license_number else None
     if phone is not None:
-        driver.phone = phone
+        driver.phone = phone.strip() if phone else None
     if experience_years is not None:
-        if experience_years < 0:
+        val_exp = int(round(float(experience_years)))
+        if val_exp < 0:
             raise HTTPException(status_code=400, detail="Experience years cannot be negative")
-        driver.experience_years = experience_years
+        driver.experience_years = val_exp
     if working_hours is not None:
-        if working_hours < 0:
+        val_work = int(round(float(working_hours)))
+        if val_work < 0:
             raise HTTPException(status_code=400, detail="Working hours cannot be negative")
-        driver.working_hours = working_hours
+        driver.working_hours = val_work
     if rest_hours is not None:
-        if rest_hours < 0:
+        val_rest = int(round(float(rest_hours)))
+        if val_rest < 0:
             raise HTTPException(status_code=400, detail="Rest hours cannot be negative")
-        driver.rest_hours = rest_hours
+        driver.rest_hours = val_rest
     if notes is not None:
         driver.notes = notes
     if status is not None:

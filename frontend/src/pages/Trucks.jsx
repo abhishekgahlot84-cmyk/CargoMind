@@ -298,7 +298,10 @@ export default function Trucks() {
         avg_speed_kmph: avgS,
       };
 
-      if (form.fuel_efficiency !== "") params.fuel_efficiency = Number(form.fuel_efficiency);
+      if (form.fuel_efficiency !== "") {
+        params.fuel_efficiency = Number(form.fuel_efficiency);
+        params.mileage_kmpl = Number(form.fuel_efficiency);
+      }
       if (form.model) params.model = form.model.trim();
       if (form.year) params.year = Number(form.year);
       if (form.notes) params.notes = form.notes.trim();
@@ -319,7 +322,17 @@ export default function Trucks() {
     } catch (err) {
       console.error("Save truck error:", err);
       const detail = err.response?.data?.detail;
-      setFormError(typeof detail === "string" ? detail : "Failed to save vehicle details.");
+      let errorMsg = "Failed to save vehicle details.";
+      if (typeof detail === "string") {
+        errorMsg = detail;
+      } else if (Array.isArray(detail)) {
+        errorMsg = detail
+          .map((d) => (d.msg ? `${d.loc ? d.loc.slice(-1)[0] + ": " : ""}${d.msg}` : JSON.stringify(d)))
+          .join(", ");
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setFormError(errorMsg);
     } finally {
       setSaving(false);
     }

@@ -90,12 +90,12 @@ def validate_truck_speeds(max_speed: Optional[float], avg_speed: Optional[float]
 @router.post("/")
 def create_truck(
     registration_number: str,
-    capacity: int,
+    capacity: float,
     fuel_type: str,
-    fuel_efficiency: int = None,
+    fuel_efficiency: float = None,
     mileage_kmpl: float = None,
     model: str = None,
-    year: int = None,
+    year: float = None,
     notes: str = None,
     company_id: int = None,
     max_speed_kmph: float = 60.0,
@@ -104,10 +104,11 @@ def create_truck(
     db: Session = Depends(get_db)
 ):
     target_company_id = company_id if (company_id and company_id != 1) else current_user.company_id
+    clean_reg = registration_number.strip().upper()
 
     existing_truck = (
         db.query(Truck)
-        .filter(Truck.registration_number == registration_number)
+        .filter(Truck.registration_number == clean_reg)
         .first()
     )
 
@@ -119,18 +120,21 @@ def create_truck(
 
     valid_max_speed, valid_avg_speed = validate_truck_speeds(max_speed_kmph, avg_speed_kmph)
 
-    eff_mileage = float(mileage_kmpl) if mileage_kmpl else (float(fuel_efficiency) if fuel_efficiency else 10.0)
+    eff_mileage = float(mileage_kmpl) if mileage_kmpl is not None else (float(fuel_efficiency) if fuel_efficiency is not None else 10.0)
+    eff_int = int(round(float(fuel_efficiency))) if fuel_efficiency is not None else int(round(eff_mileage))
+    cap_int = int(round(float(capacity))) if capacity is not None else 8000
+    yr_int = int(round(float(year))) if year is not None else None
 
     truck = Truck(
-        registration_number=registration_number,
-        capacity=capacity,
+        registration_number=clean_reg,
+        capacity=cap_int,
         fuel_type=fuel_type,
-        fuel_efficiency=fuel_efficiency or int(eff_mileage),
+        fuel_efficiency=eff_int,
         mileage_kmpl=eff_mileage,
         trips_since_service=0,
         km_since_service=0.0,
         model=model,
-        year=year,
+        year=yr_int,
         notes=notes,
         company_id=target_company_id,
         user_id=current_user.id,
@@ -282,11 +286,12 @@ def get_truck(
 def update_truck(
     truck_id: int,
     registration_number: str = None,
-    capacity: int = None,
+    capacity: float = None,
     fuel_type: str = None,
-    fuel_efficiency: int = None,
+    fuel_efficiency: float = None,
+    mileage_kmpl: float = None,
     model: str = None,
-    year: int = None,
+    year: float = None,
     notes: str = None,
     status: str = None,
     max_speed_kmph: float = None,
@@ -302,9 +307,10 @@ def update_truck(
         raise HTTPException(status_code=404, detail="Truck not found")
 
     # Check duplicate registration
-    if registration_number and registration_number != truck.registration_number:
+    if registration_number and registration_number.strip().upper() != truck.registration_number:
+        clean_reg = registration_number.strip().upper()
         existing = db.query(Truck).filter(
-            Truck.registration_number == registration_number,
+            Truck.registration_number == clean_reg,
             Truck.id != truck_id
         ).first()
         if existing:
@@ -312,20 +318,23 @@ def update_truck(
                 status_code=400,
                 detail="Another truck with this registration number already exists"
             )
-        truck.registration_number = registration_number
+        truck.registration_number = clean_reg
 
     if capacity is not None:
-        if capacity <= 0:
+        cap_val = int(round(float(capacity)))
+        if cap_val <= 0:
             raise HTTPException(status_code=400, detail="Capacity must be positive")
-        truck.capacity = capacity
+        truck.capacity = cap_val
     if fuel_type is not None:
         truck.fuel_type = fuel_type
-    if fuel_efficiency is not None:
-        truck.fuel_efficiency = fuel_efficiency
+    if fuel_efficiency is not None or mileage_kmpl is not None:
+        eff = float(mileage_kmpl) if mileage_kmpl is not None else float(fuel_efficiency)
+        truck.mileage_kmpl = eff
+        truck.fuel_efficiency = int(round(float(fuel_efficiency))) if fuel_efficiency is not None else int(round(eff))
     if model is not None:
         truck.model = model
     if year is not None:
-        truck.year = year
+        truck.year = int(round(float(year)))
     if notes is not None:
         truck.notes = notes
     if status is not None:

@@ -219,7 +219,17 @@ export default function Drivers() {
     } catch (err) {
       console.error("Save driver error:", err);
       const detail = err.response?.data?.detail;
-      setFormError(typeof detail === "string" ? detail : "Failed to save driver details.");
+      let errorMsg = "Failed to save driver details.";
+      if (typeof detail === "string") {
+        errorMsg = detail;
+      } else if (Array.isArray(detail)) {
+        errorMsg = detail
+          .map((d) => (d.msg ? `${d.loc ? d.loc.slice(-1)[0] + ": " : ""}${d.msg}` : JSON.stringify(d)))
+          .join(", ");
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setFormError(errorMsg);
     } finally {
       setSaving(false);
     }
