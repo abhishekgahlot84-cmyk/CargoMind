@@ -213,8 +213,8 @@ export default function Login() {
                 setError("");
               }}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${!isSignUp
-                  ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
-                  : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+                ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
+                : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
                 }`}
             >
               Sign In
@@ -226,8 +226,8 @@ export default function Login() {
                 setError("");
               }}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${isSignUp
-                  ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
-                  : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
+                ? "bg-white text-[#1d1d1f] shadow-sm dark:bg-[#2c2c2e] dark:text-[#f5f5f7]"
+                : "text-[#6e6e73] dark:text-[#86868b] hover:text-[#1d1d1f] dark:hover:text-[#f5f5f7]"
                 }`}
             >
               Sign Up
