@@ -2,12 +2,13 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from app.database.connection import get_db
 from app.database.models import (
-    Driver, DriverHandover, Hub, Trip, Truck
+    Driver, DriverHandover, Hub, Trip, Truck, User
 )
+from app.routes.auth import get_current_user
 from app.optimization.wellness import compute_driver_wellness
 from app.optimization.handover_planner import (
     plan_journey_handovers,
@@ -55,9 +56,56 @@ class HandoverExecute(BaseModel):
     notes: Optional[str] = None
 
 
+def _verify_trip_workspace(trip: Trip, current_user: User):
+    comp_id = current_user.company_id
+    if (trip.truck and trip.truck.company_id == comp_id) or (trip.order and trip.order.company_id == comp_id) or getattr(trip, "user_id", None) == current_user.id:
+        return
+    raise HTTPException(status_code=403, detail="Access denied to this trip record.")
+
+
+def _compute_trip_driving_metrics(trip: Trip, hub: Optional[Hub], outgoing_km: Optional[float], db: Session) -> Tuple[float, float, float]:
+    """
+    Computes (total_trip_driving_hours, segment_driving_hours, hub_route_km)
+    using driving time along planned route coordinates.
+    """
+    spd = max(15.0, float(trip.average_speed_kmph or 45.0))
+    total_dist_km = 0.0
+    hub_km = outgoing_km
+
+    if trip.planned_route and isinstance(trip.planned_route, dict):
+        coords = trip.planned_route.get("coordinates", [])
+        if coords and len(coords) >= 2:
+            cum = compute_cumulative_distances(coords)
+            total_dist_km = cum[-1]
+            if hub and hub_km is None:
+                on_route = find_hubs_on_route(coords, cum, [hub], search_radius_km=85.0)
+                if on_route:
+                    hub_km = on_route[0]["km_along_route"]
+
+    if total_dist_km <= 0.0:
+        total_dist_km = float(trip.distance or 0.0)
+
+    total_driving_hours = round(total_dist_km / spd, 2)
+
+    # Previous handover km (if any past executed handovers on this trip)
+    past_handovers = (
+        db.query(DriverHandover)
+        .filter(DriverHandover.trip_id == trip.id, DriverHandover.status == "executed")
+        .all()
+    ) if db else []
+    prev_km = max([h.outgoing_km or 0.0 for h in past_handovers], default=0.0)
+
+    target_km = hub_km if hub_km is not None else total_dist_km
+    seg_dist_km = max(0.0, target_km - prev_km)
+    seg_driving_hours = round(seg_dist_km / spd, 2)
+
+    return total_driving_hours, seg_driving_hours, target_km
+
+
 @router.post("/plan")
 def plan_handover(
     data: HandoverPlan,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Plan a driver handover at a hub for an active trip."""
@@ -66,16 +114,20 @@ def plan_handover(
     trip = db.query(Trip).filter(Trip.id == data.trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+    _verify_trip_workspace(trip, current_user)
     if trip.status not in ["planned", "in_progress"]:
         raise HTTPException(
             status_code=409,
             detail=f"Trip #{data.trip_id} is not active (status: {trip.status})"
         )
 
-    # Validate hub
-    hub = db.query(Hub).filter(Hub.id == data.hub_id).first()
+    # Validate hub belongs to current user's workspace
+    hub = db.query(Hub).filter(
+        Hub.id == data.hub_id,
+        Hub.company_id == current_user.company_id
+    ).first()
     if not hub:
-        raise HTTPException(status_code=404, detail="Hub not found")
+        raise HTTPException(status_code=404, detail="Hub not found in your workspace")
     if hub.operational_status != "active":
         raise HTTPException(
             status_code=409,
@@ -90,8 +142,11 @@ def plan_handover(
                    f"Current driver is #{trip.driver_id}"
         )
 
-    # Validate incoming driver exists and is available
-    incoming_driver = db.query(Driver).filter(Driver.id == data.incoming_driver_id).first()
+    # Validate incoming driver exists and is available in user's workspace
+    incoming_driver = db.query(Driver).filter(
+        Driver.id == data.incoming_driver_id,
+        Driver.company_id == current_user.company_id
+    ).first()
     if not incoming_driver:
         raise HTTPException(status_code=404, detail=f"Incoming driver #{data.incoming_driver_id} not found")
 
@@ -123,6 +178,25 @@ def plan_handover(
                     status_code=400,
                     detail=f"Hub '{hub.name}' is not located along the route for trip #{trip.id}. Please select a hub on this corridor."
                 )
+
+    # Enforce 8.0-hour driving rules:
+    # 1. If complete trip <= 8.0h, complete with same driver (no handover allowed)
+    # 2. Handover cannot be planned before outgoing driver completes >= 8.0h driving
+    total_driving_hours, seg_driving_hours, resolved_hub_km = _compute_trip_driving_metrics(
+        trip=trip, hub=hub, outgoing_km=data.outgoing_km, db=db
+    )
+    if total_driving_hours <= 8.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Complete trip can be driven in {total_driving_hours:.1f} hours (<= 8.0h threshold). Completed with the same driver; no driver handover required."
+        )
+    if seg_driving_hours < 8.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Driver handover cannot be planned before completing at least 8.0 hours of driving on this segment (calculated {seg_driving_hours:.1f} driving hours to {hub.name})."
+        )
+    if data.outgoing_km is None and resolved_hub_km is not None:
+        data.outgoing_km = resolved_hub_km
 
     # Check no duplicate pending handover for this trip
     existing = db.query(DriverHandover).filter(
@@ -174,6 +248,7 @@ def plan_handover(
 def execute_handover(
     handover_id: int,
     data: HandoverExecute = HandoverExecute(),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Execute a planned handover: switch the driver on the trip."""
@@ -182,16 +257,11 @@ def execute_handover(
     if not handover:
         raise HTTPException(status_code=404, detail="Handover plan not found")
 
-    if handover.status not in ["planned", "confirmed"]:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Handover #{handover_id} cannot be executed (status: {handover.status})"
-        )
-
     # Re-validate the trip is still active
     trip = db.query(Trip).filter(Trip.id == handover.trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip no longer exists")
+    _verify_trip_workspace(trip, current_user)
     if trip.status not in ["planned", "in_progress"]:
         raise HTTPException(
             status_code=409,
@@ -231,6 +301,19 @@ def execute_handover(
         )
 
     outgoing_driver = db.query(Driver).filter(Driver.id == handover.outgoing_driver_id).first()
+
+    # Enforce minimum 8.0 driving hours threshold before accepting/executing handover
+    total_h, seg_h, _ = _compute_trip_driving_metrics(trip, handover.hub, handover.outgoing_km, db)
+    if total_h <= 8.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot execute handover: complete trip can be driven in {total_h:.1f} hours (<= 8.0h threshold). Handover not permitted."
+        )
+    if seg_h < 8.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot execute handover: driver handover cannot be accepted before completing at least 8.0 hours of driving on this segment (calculated {seg_h:.1f} driving hours)."
+        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -279,27 +362,41 @@ def execute_handover(
 def get_handovers(
     trip_id: int = None,
     status: str = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(DriverHandover)
+    query = (
+        db.query(DriverHandover)
+        .join(Trip, DriverHandover.trip_id == Trip.id)
+        .outerjoin(Truck, Trip.truck_id == Truck.id)
+        .filter(Truck.company_id == current_user.company_id)
+    )
     if trip_id:
         query = query.filter(DriverHandover.trip_id == trip_id)
     if status:
         query = query.filter(DriverHandover.status == status)
 
-    handovers = query.all()
+    handovers = query.order_by(
+        DriverHandover.trip_id.asc(),
+        DriverHandover.outgoing_km.asc(),
+        DriverHandover.id.asc()
+    ).all()
     return [_handover_dict(h) for h in handovers]
 
 
 @router.get("/eligible-drivers")
 def get_eligible_relay_drivers_endpoint(
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Returns all eligible relay drivers ranked descending by wellness score.
     Used for the searchable dropdown in the Schedule Handover modal.
     """
-    drivers = db.query(Driver).filter(Driver.status.in_(["available", "off_duty"])).all()
+    drivers = db.query(Driver).filter(
+        Driver.company_id == current_user.company_id,
+        Driver.status.in_(["available", "off_duty"])
+    ).all()
     results = []
 
     for d in drivers:
@@ -325,11 +422,15 @@ def get_eligible_relay_drivers_endpoint(
 @router.get("/{handover_id}")
 def get_handover(
     handover_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     handover = db.query(DriverHandover).filter(DriverHandover.id == handover_id).first()
     if not handover:
         raise HTTPException(status_code=404, detail="Handover not found")
+    trip = db.query(Trip).filter(Trip.id == handover.trip_id).first()
+    if trip:
+        _verify_trip_workspace(trip, current_user)
     return _handover_dict(handover)
 
 
@@ -337,11 +438,15 @@ def get_handover(
 @router.post("/{handover_id}/cancel")
 def cancel_handover(
     handover_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     handover = db.query(DriverHandover).filter(DriverHandover.id == handover_id).first()
     if not handover:
         raise HTTPException(status_code=404, detail="Handover not found")
+    trip = db.query(Trip).filter(Trip.id == handover.trip_id).first()
+    if trip:
+        _verify_trip_workspace(trip, current_user)
     if handover.status == "executed":
         raise HTTPException(status_code=409, detail="Cannot cancel an already executed handover")
 
@@ -353,12 +458,14 @@ def cancel_handover(
 @router.get("/trip/{trip_id}/dashboard")
 def get_trip_handover_dashboard(
     trip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Return handover dashboard data for a trip with live status and wellness alerts."""
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+    _verify_trip_workspace(trip, current_user)
 
     from app.database.models import Order, Truck
     order = db.query(Order).filter(Order.id == trip.order_id).first() if trip.order_id else None
@@ -370,7 +477,7 @@ def get_trip_handover_dashboard(
     pending_handover = db.query(DriverHandover).filter(
         DriverHandover.trip_id == trip_id,
         DriverHandover.status.in_(["planned", "confirmed"])
-    ).order_by(DriverHandover.id.desc()).first()
+    ).order_by(DriverHandover.outgoing_km.asc(), DriverHandover.id.asc()).first()
 
     # Check if handing over soon (within 60 minutes)
     handing_over_soon = False
@@ -398,7 +505,17 @@ def get_trip_handover_dashboard(
     if trip.planned_route and isinstance(trip.planned_route, dict):
         coords = trip.planned_route.get("coordinates", [])
         if coords and len(coords) >= 2:
-            hubs = db.query(Hub).filter(Hub.operational_status == "active").all()
+            hubs = db.query(Hub).filter(
+                Hub.company_id == current_user.company_id,
+                Hub.operational_status == "active"
+            ).all()
+            from app.optimization.fleet_queries import get_available_drivers
+            avail_drivers = get_available_drivers(db, company_id=current_user.company_id)
+            if not avail_drivers:
+                avail_drivers = get_available_drivers(db, company_id=current_user.company_id, enforce_wellness=False)
+            if not avail_drivers:
+                avail_drivers = db.query(Driver).filter(Driver.company_id == current_user.company_id).all()
+
             plan_res = plan_journey_handovers(
                 route_coordinates=coords,
                 start_time=trip.start_time or datetime.now(timezone.utc).isoformat(),
@@ -407,6 +524,7 @@ def get_trip_handover_dashboard(
                 origin_name=order.pickup_location if order else "Origin",
                 dest_name=order.delivery_location if order else "Destination",
                 initial_driver=current_driver,
+                available_relay_drivers=avail_drivers,
             )
             timeline_segments = plan_res.get("segments", [])
 
@@ -436,6 +554,7 @@ def get_trip_handover_dashboard(
 @router.post("/auto-plan/{trip_id}")
 def auto_plan_handovers_endpoint(
     trip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -445,6 +564,7 @@ def auto_plan_handovers_endpoint(
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+    _verify_trip_workspace(trip, current_user)
 
     if not trip.planned_route or not isinstance(trip.planned_route, dict):
         raise HTTPException(
@@ -456,11 +576,18 @@ def auto_plan_handovers_endpoint(
     if not coords or len(coords) < 2:
         raise HTTPException(status_code=400, detail="Planned route has invalid coordinates.")
 
-    hubs = db.query(Hub).filter(Hub.operational_status == "active").all()
+    hubs = db.query(Hub).filter(
+        Hub.company_id == current_user.company_id,
+        Hub.operational_status == "active"
+    ).all()
 
     # Get available drivers ranked by wellness
     from app.optimization.fleet_queries import get_available_drivers
-    available_drivers = get_available_drivers(db, company_id=trip.truck.company_id if trip.truck else None)
+    available_drivers = get_available_drivers(db, company_id=current_user.company_id)
+    if not available_drivers:
+        available_drivers = get_available_drivers(db, company_id=current_user.company_id, enforce_wellness=False)
+    if not available_drivers:
+        available_drivers = db.query(Driver).filter(Driver.company_id == current_user.company_id).all()
 
     plan = plan_journey_handovers(
         route_coordinates=coords,
@@ -473,25 +600,69 @@ def auto_plan_handovers_endpoint(
         available_relay_drivers=available_drivers,
     )
 
+    if plan.get("status") == "error":
+        raise HTTPException(
+            status_code=400,
+            detail=plan.get("message", "No valid handover hub found after the 8.0-hour driving minimum.")
+        )
+
+    # Persist the newly planned handovers into the database
+    # 1. Clear existing planned handovers for this trip
+    db.query(DriverHandover).filter(
+        DriverHandover.trip_id == trip.id,
+        DriverHandover.status == "planned"
+    ).delete(synchronize_session=False)
+
+    # 2. Add each planned handover
+    for h in plan.get("handovers", []):
+        incoming_id = h.get("incoming_driver_id")
+        outgoing_id = h.get("outgoing_driver_id") or trip.driver_id
+        if incoming_id and outgoing_id:
+            handover_record = DriverHandover(
+                trip_id=trip.id,
+                hub_id=h.get("hub_id"),
+                outgoing_driver_id=outgoing_id,
+                incoming_driver_id=incoming_id,
+                planned_handover_time=h.get("estimated_arrival"),
+                outgoing_km=h.get("outgoing_km") or h.get("km_along_route"),
+                notes=h.get("recommendation"),
+                status="planned",
+            )
+            db.add(handover_record)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to persist planned handovers: {str(e)}"
+        )
+
     return plan
 
 
 @router.get("/corridor-hubs/{trip_id}")
 def get_corridor_hubs_for_trip(
     trip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Returns only the hubs located on the specific route of this trip/truck.
+    Returns only the hubs located on the specific route of this trip/truck within workspace.
     Used for the Handover Hub dropdown in the Schedule Handover modal.
     """
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+    _verify_trip_workspace(trip, current_user)
 
     if not trip.planned_route or not isinstance(trip.planned_route, dict):
-        # Fallback to all active hubs if route not yet persisted
-        hubs = db.query(Hub).filter(Hub.operational_status == "active").all()
+        # Fallback to active hubs in workspace if route not yet persisted
+        hubs = db.query(Hub).filter(
+            Hub.company_id == current_user.company_id,
+            Hub.operational_status == "active"
+        ).all()
         return [
             {
                 "id": h.id,
@@ -505,7 +676,10 @@ def get_corridor_hubs_for_trip(
 
     coords = trip.planned_route.get("coordinates", [])
     cum = compute_cumulative_distances(coords)
-    hubs = db.query(Hub).filter(Hub.operational_status == "active").all()
+    hubs = db.query(Hub).filter(
+        Hub.company_id == current_user.company_id,
+        Hub.operational_status == "active"
+    ).all()
 
     on_route = find_hubs_on_route(coords, cum, hubs, search_radius_km=85.0)
 

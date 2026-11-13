@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.database.models import Maintenance, MaintenanceLog, Truck, Trip, Order, User
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 from app.optimization.fleet_queries import get_available_trucks
 
 
@@ -72,19 +72,19 @@ def get_maintenance_suggestions_endpoint(
     due_trips: int = 30,
     warn_km: float = 8000.0,
     due_km: float = 12000.0,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Compute real-time maintenance suggestion cards for trucks across the fleet.
+    Compute real-time maintenance suggestion cards for trucks across the user's fleet workspace.
     Sorted by urgency ('due' critical first, then 'warning' recommended).
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
-    trucks = db.query(Truck).filter((Truck.company_id == comp_id) | (Truck.user_id == user_id)).all()
+    comp_id = current_user.company_id
+    trucks = db.query(Truck).filter(Truck.company_id == comp_id).all()
 
     # Active trips lookup
-    active_trips = db.query(Trip).filter(
+    active_trips = db.query(Trip).join(Truck, Trip.truck_id == Truck.id).filter(
+        Truck.company_id == comp_id,
         Trip.status.in_(["planned", "in_progress"])
     ).all()
     in_progress_truck_ids = {t.truck_id: t.id for t in active_trips if t.status == "in_progress" and t.truck_id}
@@ -150,21 +150,20 @@ def get_maintenance_suggestions_endpoint(
 @router.post("/send-to-maintenance")
 def send_truck_to_maintenance_endpoint(
     req: SendToMaintenanceRequest,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Transition truck status to 'maintenance' and safely reassign any planned trips.
     Blocks if vehicle is actively mid-transit on an 'in_progress' trip.
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     truck = db.query(Truck).filter(
         Truck.id == req.truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+        Truck.company_id == comp_id
     ).first()
     if not truck:
-        raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found")
+        raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found in your workspace")
 
     # 1. Block if truck is on an active in_progress trip
     active_in_progress = db.query(Trip).filter(
@@ -191,9 +190,12 @@ def send_truck_to_maintenance_endpoint(
     replacement_used = None
     if planned_trips:
         if req.replacement_truck_id:
-            replacement = db.query(Truck).filter(Truck.id == req.replacement_truck_id).first()
+            replacement = db.query(Truck).filter(
+                Truck.id == req.replacement_truck_id,
+                Truck.company_id == comp_id
+            ).first()
             if not replacement:
-                raise HTTPException(status_code=404, detail="Replacement truck not found")
+                raise HTTPException(status_code=404, detail="Replacement truck not found in your workspace")
             if replacement.status not in ["available"]:
                 raise HTTPException(status_code=409, detail=f"Replacement truck {replacement.registration_number} is not currently available (status: {replacement.status})")
 
@@ -250,21 +252,20 @@ def send_truck_to_maintenance_endpoint(
 @router.post("/mark-maintained")
 def mark_truck_maintained_endpoint(
     req: MarkMaintainedRequest,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Mark a truck as maintained: resets service counters, records service date,
     writes to maintenance log, and returns vehicle to 'available' status.
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     truck = db.query(Truck).filter(
         Truck.id == req.truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+        Truck.company_id == comp_id
     ).first()
     if not truck:
-        raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found")
+        raise HTTPException(status_code=404, detail=f"Truck #{req.truck_id} not found in your workspace")
 
     trips_completed = truck.trips_since_service or 0
     km_completed = truck.km_since_service or 0.0
@@ -322,16 +323,15 @@ def mark_truck_maintained_endpoint(
 @router.get("/logs/{truck_id}")
 def get_truck_maintenance_logs(
     truck_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Retrieve full maintenance history log for a truck."""
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     query = (
         db.query(MaintenanceLog)
         .join(Truck, MaintenanceLog.truck_id == Truck.id)
-        .filter((Truck.company_id == comp_id) | (Truck.user_id == user_id))
+        .filter(Truck.company_id == comp_id)
     )
     if truck_id > 0:
         query = query.filter(MaintenanceLog.truck_id == truck_id)
@@ -357,17 +357,16 @@ def get_truck_maintenance_logs(
 @router.get("/replacements/{truck_id}")
 def get_replacement_options_endpoint(
     truck_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Returns available replacement trucks with similar or larger capacity.
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     target = db.query(Truck).filter(
         Truck.id == truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
+        Truck.company_id == comp_id
     ).first()
     if not target:
         raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
@@ -399,7 +398,7 @@ def create_maintenance(
     odometer: int = None,
     engine_hours: int = None,
     cost: int = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     truck = db.query(Truck).filter(Truck.id == truck_id, Truck.company_id == current_user.company_id).first()
@@ -435,7 +434,7 @@ def create_maintenance(
 
 @router.get("/")
 def get_maintenance_records(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     records = (
@@ -450,13 +449,15 @@ def get_maintenance_records(
 @router.get("/{maintenance_id}")
 def get_maintenance(
     maintenance_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     record = (
         db.query(Maintenance)
-        .filter(Maintenance.id == maintenance_id)
+        .join(Truck, Maintenance.truck_id == Truck.id)
+        .filter(Maintenance.id == maintenance_id, Truck.company_id == current_user.company_id)
         .first()
     )
     if not record:
-        raise HTTPException(status_code=404, detail="Maintenance record not found")
+        raise HTTPException(status_code=404, detail="Maintenance record not found or access denied")
     return record

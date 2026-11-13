@@ -14,6 +14,8 @@ import {
   RotateCcw,
   Sparkles,
   Navigation,
+  Info,
+  AlertTriangle,
 } from "lucide-react";
 import api from "../services/api";
 import { useTheme } from "../context/ThemeContext";
@@ -84,6 +86,8 @@ export default function Optimization() {
   const [activeAction, setActiveAction] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [resourceError, setResourceError] = useState("");
+  const [loadingResources, setLoadingResources] = useState(false);
   const [repairMsg, setRepairMsg] = useState("");
   const [repairing, setRepairing] = useState(false);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -101,11 +105,13 @@ export default function Optimization() {
   const [confirmSuccessMsg, setConfirmSuccessMsg] = useState("");
 
   async function loadResources() {
+    setLoadingResources(true);
+    setResourceError("");
     try {
       const [trucksRes, driversRes, tripsRes] = await Promise.all([
-        api.get("/trucks/").catch(() => ({ data: [] })),
-        api.get("/drivers/").catch(() => ({ data: [] })),
-        api.get("/trips/").catch(() => ({ data: [] })),
+        api.get("/trucks/"),
+        api.get("/drivers/"),
+        api.get("/trips/"),
       ]);
       const tList = Array.isArray(trucksRes.data) ? trucksRes.data : [];
       const dList = Array.isArray(driversRes.data) ? driversRes.data : [];
@@ -115,11 +121,24 @@ export default function Optimization() {
       setDrivers(dList);
       setActiveTrips(trList.filter((t) => ["planned", "in_progress"].includes(t.status)));
 
-      if (tList.length > 0 && !truckId) setTruckId(tList[0].id);
-      if (dList.length > 0 && !driverId) setDriverId(dList[0].id);
+      // Auto-select first available resources if nothing selected yet
+      const availableTruck = tList.find((t) => t.status === "available") || tList[0];
+      const availableDriver = dList.find((d) => d.status === "available") || dList[0];
+
+      if (availableTruck && !truckId) setTruckId(String(availableTruck.id));
+      if (availableDriver && !driverId) setDriverId(String(availableDriver.id));
       if (trList.length > 0 && !selectedTripForAlternatives) setSelectedTripForAlternatives(String(trList[0].id));
     } catch (e) {
       console.error("Failed to load resources for optimization", e);
+      if (e.isConfigError) {
+        setResourceError(e.message);
+      } else {
+        const detail = e.response?.data?.detail;
+        const msg = typeof detail === "string" ? detail : (e.message || "Failed to load workspace fleet resources.");
+        setResourceError(msg);
+      }
+    } finally {
+      setLoadingResources(false);
     }
   }
 
@@ -586,6 +605,27 @@ export default function Optimization() {
         </div>
       </header>
 
+      {/* Resource Loading Error Alert */}
+      {resourceError && (
+        <div className="mb-6 flex items-start justify-between gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-5 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-400">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <h4 className="font-semibold text-sm">Failed to Load Fleet Resources</h4>
+              <p className="mt-1 leading-relaxed">{resourceError}</p>
+            </div>
+          </div>
+          <button
+            onClick={loadResources}
+            disabled={loadingResources}
+            className="apple-btn-secondary shrink-0 text-xs py-1.5 px-3"
+          >
+            <RefreshCw size={12} className={loadingResources ? "animate-spin" : ""} />
+            Retry
+          </button>
+        </div>
+      )}
+
       {repairMsg && (
         <div className="mb-6 flex items-center justify-between rounded-2xl border border-[#34c759]/20 bg-[#34c759]/10 p-4 text-xs font-medium text-[#34c759] dark:border-[#30d158]/20 dark:bg-[#30d158]/10 dark:text-[#30d158]">
           <div className="flex items-center gap-2">
@@ -902,11 +942,21 @@ export default function Optimization() {
               onChange={(e) => setTruckId(e.target.value)}
               className="apple-input text-xs"
             >
-              {trucks.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.registration_number} ({t.capacity} kg) - {t.status}
-                </option>
-              ))}
+              {trucks.length === 0 ? (
+                <option value="">No trucks found in workspace</option>
+              ) : (
+                <>
+                  <option value="">-- Select an Assigned Truck --</option>
+                  {trucks.map((t) => {
+                    const isAvail = t.status === "available";
+                    return (
+                      <option key={t.id} value={t.id}>
+                        {t.registration_number} ({t.capacity} kg) — {isAvail ? "🟢 Available" : `🟡 ${t.status}`}
+                      </option>
+                    );
+                  })}
+                </>
+              )}
             </select>
           </div>
 
@@ -919,11 +969,21 @@ export default function Optimization() {
               onChange={(e) => setDriverId(e.target.value)}
               className="apple-input text-xs"
             >
-              {drivers.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name} (Wellness: {d.wellness_score || 85} · {d.status})
-                </option>
-              ))}
+              {drivers.length === 0 ? (
+                <option value="">No drivers found in workspace</option>
+              ) : (
+                <>
+                  <option value="">-- Select a Designated Driver --</option>
+                  {drivers.map((d) => {
+                    const isAvail = d.status === "available";
+                    return (
+                      <option key={d.id} value={d.id}>
+                        {d.name} (Wellness: {d.wellness_score ?? 85}) — {isAvail ? "🟢 Available" : `🟡 ${d.status}`}
+                      </option>
+                    );
+                  })}
+                </>
+              )}
             </select>
           </div>
 
@@ -1002,134 +1062,263 @@ export default function Optimization() {
       )}
 
       {/* Solver Results View */}
-      {result && (
-        <div className="apple-card overflow-hidden mb-10">
-          <div className="flex items-center justify-between border-b border-black/[0.06] p-6 dark:border-white/[0.08]">
-            <div className="flex items-center gap-2.5">
-              <CheckCircle2 size={18} className="text-[#34c759] dark:text-[#30d158]" />
-              <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
-                Solver Execution Output
-              </h2>
-            </div>
-            <button
-              onClick={() => setShowRawJson(!showRawJson)}
-              className="apple-btn-secondary text-xs"
-            >
-              <Code size={13} />
-              {showRawJson ? "Hide JSON" : "Raw JSON"}
-            </button>
-          </div>
+      {result && (() => {
+        const statusStr = (result.data?.status || result.data?.solver_status || "").toLowerCase();
+        const isInformativeOutcome =
+          [
+            "no_orders",
+            "no_eligible_orders",
+            "no_trucks",
+            "no_drivers",
+            "route_not_feasible",
+            "fleet_not_feasible",
+            "missing_locations",
+            "infeasible",
+          ].includes(statusStr) ||
+          statusStr.startsWith("no_") ||
+          statusStr.includes("not_feasible") ||
+          statusStr.includes("infeasible") ||
+          (statusStr.includes("no") && statusStr.includes("truck")) ||
+          (statusStr.includes("no") && statusStr.includes("driver")) ||
+          (statusStr.includes("no") && statusStr.includes("order"));
 
-          <div className="p-6 space-y-6">
-            {result.data?.message && (
-              <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] p-4 text-xs font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#f5f5f7]">
-                {result.data.message}
+        return (
+          <div className="apple-card overflow-hidden mb-10">
+            <div className="flex items-center justify-between border-b border-black/[0.06] p-6 dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5">
+                {isInformativeOutcome ? (
+                  <Info size={18} className="text-[#ff9f0a] dark:text-[#ffd60a]" />
+                ) : (
+                  <CheckCircle2 size={18} className="text-[#34c759] dark:text-[#30d158]" />
+                )}
+                <h2 className="text-base font-semibold text-[#1d1d1f] dark:text-[#f5f5f7]">
+                  {isInformativeOutcome ? "Optimization Feasibility Notice" : "Optimization Solution Found"}
+                </h2>
               </div>
-            )}
+              <div className="flex items-center gap-2">
+                <span
+                  className={`apple-badge text-[11px] ${
+                    isInformativeOutcome
+                      ? "bg-[#ff9f0a]/10 text-[#ff9f0a] dark:bg-[#ffd60a]/15 dark:text-[#ffd60a]"
+                      : "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+                  }`}
+                >
+                  {result.data?.solver_status || result.data?.status?.toUpperCase() || (isInformativeOutcome ? "INFEASIBLE" : "OPTIMAL")}
+                </span>
+                <button
+                  onClick={() => setShowRawJson(!showRawJson)}
+                  className="apple-btn-secondary text-xs"
+                >
+                  <Code size={13} />
+                  {showRawJson ? "Hide JSON" : "Raw JSON"}
+                </button>
+              </div>
+            </div>
 
-            {/* Load Allocation View */}
-            {Array.isArray(result.data?.assignments) && result.data.assignments.length > 0 && (
-              <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#86868b] mb-3">
-                  Vehicle Load Allocations ({result.data.assignments.length})
-                </h3>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  {result.data.assignments.map((asgn, idx) => (
-                    <div
-                      key={idx}
-                      className="rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 space-y-3 dark:border-white/[0.06] dark:bg-white/[0.02]"
-                    >
-                      <div className="flex items-center justify-between border-b border-black/[0.06] pb-2 dark:border-white/[0.08]">
-                        <div className="flex items-center gap-2">
-                          <Truck size={16} className="text-[#0071e3] dark:text-[#2997ff]" />
-                          <span className="font-semibold text-xs text-[#1d1d1f] dark:text-[#f5f5f7]">
-                            {asgn.truck_registration || `Truck #${asgn.truck_id}`}
-                          </span>
-                        </div>
-                        <span className="text-xs text-[#86868b]">
-                          Driver: {asgn.driver_name || `#${asgn.driver_id}`}
-                        </span>
-                      </div>
+            <div className="p-6 space-y-6">
+              {/* Informative Feasibility Card */}
+              {isInformativeOutcome && (
+                <div className="rounded-2xl border border-[#ff9f0a]/30 bg-[#ff9f0a]/10 p-5 text-xs text-[#1d1d1f] dark:text-[#f5f5f7] space-y-3">
+                  <div className="flex items-center gap-2 font-semibold text-[#ff9f0a] dark:text-[#ffd60a]">
+                    <AlertTriangle size={16} />
+                    <span>Solver Outcome: {result.data?.message || "Feasible optimization solution could not be generated."}</span>
+                  </div>
 
-                      <div className="grid grid-cols-2 gap-2 text-xs">
-                        <div>
-                          <span className="text-[#86868b]">Payload:</span>{" "}
-                          <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{asgn.total_weight_kg ?? asgn.total_weight ?? 0} / {asgn.truck_capacity} kg</strong>
-                          <span className="ml-1 text-[#86868b]">({asgn.utilization_percentage}%)</span>
-                        </div>
-                        <div>
-                          <span className="text-[#86868b]">Fuel Cost:</span>{" "}
-                          <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">₹{asgn.total_fuel_cost ?? asgn.fuel_cost ?? 0}</strong>
-                        </div>
+                  {/* Unassigned orders list */}
+                  {Array.isArray(result.data?.unassigned_orders) && result.data.unassigned_orders.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-[#ff9f0a]/20">
+                      <span className="font-semibold block text-[11px] uppercase tracking-wider text-[#86868b]">
+                        Unallocated Consignments ({result.data.unassigned_orders.length}):
+                      </span>
+                      <div className="space-y-1.5">
+                        {result.data.unassigned_orders.map((u, i) => (
+                          <div key={i} className="flex flex-wrap items-center justify-between text-xs rounded-lg bg-black/[0.03] dark:bg-white/[0.03] p-2.5">
+                            <span>Consignment #{u.order_id || i + 1} ({u.weight || 0} kg) · {u.pickup_location || "Origin"} → {u.delivery_location || "Dest"}</span>
+                            <span className="text-[#86868b] text-[11px]">{u.reason || "Capacity exceeded or no available vehicle."}</span>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
+                  )}
 
-            {/* Fleet Route VRP View */}
-            {Array.isArray(result.data?.routes) && result.data.routes.length > 0 && (
-              <div>
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.06] pb-3 dark:border-white/[0.08]">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
-                    <Truck size={15} className="text-[#34c759] dark:text-[#30d158]" />
-                    Fleet Vehicle Routes ({result.data.routes.length} Active Vehicles)
-                  </h3>
-                </div>
-
-                <div className="space-y-4">
-                  {result.data.routes.map((route, rIdx) => (
-                    <div
-                      key={rIdx}
-                      className="rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 space-y-4 dark:border-white/[0.06] dark:bg-white/[0.02]"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.06] pb-2 dark:border-white/[0.08]">
-                        <div className="flex items-center gap-2 font-semibold text-xs text-[#1d1d1f] dark:text-[#f5f5f7]">
-                          <Truck size={16} className="text-[#34c759] dark:text-[#30d158]" />
-                          <span>Vehicle: {route.truck_registration || `Truck #${route.truck_id}`}</span>
-                          <span className="text-xs font-normal text-[#86868b]">
-                            • Driver: {route.driver_name || `#${route.driver_id}`}
-                          </span>
-                        </div>
-                        <span className="apple-badge bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]">
-                          {route.total_distance_km} km • {route.estimated_driving_hours} hrs • ₹{route.fuel_cost}
-                        </span>
-                      </div>
-
-                      {/* Stops sequence */}
-                      {Array.isArray(route.stops) && route.stops.length > 0 && (
-                        <div>
-                          <span className="text-xs font-semibold text-[#86868b] block mb-2">Stop Sequence:</span>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {route.stops.map((stop, sIdx) => (
-                              <div key={sIdx} className="flex items-center gap-1.5 text-xs">
-                                <span className="px-3 py-1.5 rounded-xl border font-medium bg-white border-black/[0.08] text-[#1d1d1f] dark:bg-[#161618] dark:border-white/[0.08] dark:text-[#f5f5f7]">
-                                  {stop.name || stop.location || `Stop #${sIdx + 1}`}
-                                </span>
-                                {sIdx < route.stops.length - 1 && (
-                                  <ArrowRight size={13} className="text-[#34c759] dark:text-[#30d158] shrink-0" />
-                                )}
-                              </div>
-                            ))}
+                  {/* Skipped orders list */}
+                  {Array.isArray(result.data?.skipped_orders) && result.data.skipped_orders.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-[#ff9f0a]/20">
+                      <span className="font-semibold block text-[11px] uppercase tracking-wider text-[#86868b]">
+                        Ineligible Consignments ({result.data.skipped_orders.length}):
+                      </span>
+                      <div className="space-y-1.5">
+                        {result.data.skipped_orders.map((s, i) => (
+                          <div key={i} className="flex flex-wrap items-center justify-between text-xs rounded-lg bg-black/[0.03] dark:bg-white/[0.03] p-2.5">
+                            <span>Consignment #{s.order_id || i + 1}</span>
+                            <span className="text-[#86868b] text-[11px]">{s.reason}</span>
                           </div>
-                        </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actionable Guidance */}
+                  <div className="pt-2 text-[11px] text-[#6e6e73] dark:text-[#86868b] border-t border-[#ff9f0a]/20">
+                    <strong>Recommended Action:</strong>{" "}
+                    {statusStr.includes("truck")
+                      ? "All workspace trucks are currently dispatched on active trips or in maintenance. Register new trucks or reset idle vehicles in Fleet & Vehicles."
+                      : statusStr.includes("driver")
+                      ? "No drivers in 'available' status with acceptable wellness score (>= 60) and mandatory rest (>= 8h). Go to Drivers to register or reassign drivers."
+                      : statusStr.includes("order")
+                      ? "No pending consignments need delivery. Go to Consignments to create or import pending orders."
+                      : "The selected truck's capacity cannot accommodate pending consignments, or destination coordinates are outside navigable road corridors. Select a truck with higher capacity or adjust consignment weights."}
+                  </div>
+                </div>
+              )}
+
+              {/* Success Message Banner */}
+              {!isInformativeOutcome && result.data?.message && (
+                <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] p-4 text-xs font-medium text-[#1d1d1f] dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-[#f5f5f7]">
+                  {result.data.message}
+                </div>
+              )}
+
+              {/* Single Route Output View */}
+              {!isInformativeOutcome && result.data?.route && (
+                <div className="rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 space-y-4 dark:border-white/[0.06] dark:bg-white/[0.02]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.06] pb-3 dark:border-white/[0.08]">
+                    <div className="flex items-center gap-2 font-semibold text-xs text-[#1d1d1f] dark:text-[#f5f5f7]">
+                      <Truck size={16} className="text-[#0071e3] dark:text-[#2997ff]" />
+                      <span>Single Truck Route Solution</span>
+                      {result.data.trip?.id && (
+                        <span className="text-[#86868b] font-normal">• Trip #{result.data.trip.id}</span>
                       )}
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
+                    <span className="apple-badge bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]">
+                      {result.data.route.total_distance_km} km • {result.data.route.estimated_hours} hrs • {result.data.route.total_stops || 2} Stops
+                    </span>
+                  </div>
 
-            {/* Raw JSON inspection */}
-            {showRawJson && (
-              <pre className="rounded-2xl border border-black/[0.08] bg-[#0c1017] p-5 text-xs text-[#34c759] font-mono overflow-x-auto dark:border-white/[0.08]">
-                {JSON.stringify(result.data, null, 2)}
-              </pre>
-            )}
+                  {Array.isArray(result.data.route.stops) && result.data.route.stops.length > 0 && (
+                    <div>
+                      <span className="text-xs font-semibold text-[#86868b] block mb-2">Stop Sequence:</span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {result.data.route.stops.map((stop, sIdx) => (
+                          <div key={sIdx} className="flex items-center gap-1.5 text-xs">
+                            <span className="px-3 py-1.5 rounded-xl border font-medium bg-white border-black/[0.08] text-[#1d1d1f] dark:bg-[#161618] dark:border-white/[0.08] dark:text-[#f5f5f7]">
+                              {stop.name || `Stop #${sIdx + 1}`}
+                            </span>
+                            {sIdx < result.data.route.stops.length - 1 && (
+                              <ArrowRight size={13} className="text-[#0071e3] dark:text-[#2997ff] shrink-0" />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Load Allocation View */}
+              {!isInformativeOutcome && Array.isArray(result.data?.assignments) && result.data.assignments.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-[#86868b] mb-3">
+                    Vehicle Load Allocations ({result.data.assignments.length})
+                  </h3>
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {result.data.assignments.map((asgn, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 space-y-3 dark:border-white/[0.06] dark:bg-white/[0.02]"
+                      >
+                        <div className="flex items-center justify-between border-b border-black/[0.06] pb-2 dark:border-white/[0.08]">
+                          <div className="flex items-center gap-2">
+                            <Truck size={16} className="text-[#0071e3] dark:text-[#2997ff]" />
+                            <span className="font-semibold text-xs text-[#1d1d1f] dark:text-[#f5f5f7]">
+                              {asgn.truck_registration || `Truck #${asgn.truck_id}`}
+                            </span>
+                          </div>
+                          <span className="text-xs text-[#86868b]">
+                            Driver: {asgn.driver_name || `#${asgn.driver_id}`}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <span className="text-[#86868b]">Payload:</span>{" "}
+                            <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">{asgn.total_weight_kg ?? asgn.total_weight ?? 0} / {asgn.truck_capacity} kg</strong>
+                            <span className="ml-1 text-[#86868b]">({asgn.utilization_percentage}%)</span>
+                          </div>
+                          <div>
+                            <span className="text-[#86868b]">Fuel Cost:</span>{" "}
+                            <strong className="text-[#1d1d1f] dark:text-[#f5f5f7]">₹{asgn.total_fuel_cost ?? asgn.fuel_cost ?? 0}</strong>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Fleet Route VRP View */}
+              {!isInformativeOutcome && Array.isArray(result.data?.routes) && result.data.routes.length > 0 && (
+                <div>
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.06] pb-3 dark:border-white/[0.08]">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[#1d1d1f] dark:text-[#f5f5f7] flex items-center gap-2">
+                      <Truck size={15} className="text-[#34c759] dark:text-[#30d158]" />
+                      Fleet Vehicle Routes ({result.data.routes.length} Active Vehicles)
+                    </h3>
+                  </div>
+
+                  <div className="space-y-4">
+                    {result.data.routes.map((route, rIdx) => (
+                      <div
+                        key={rIdx}
+                        className="rounded-2xl border border-black/[0.06] bg-black/[0.015] p-5 space-y-4 dark:border-white/[0.06] dark:bg-white/[0.02]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/[0.06] pb-2 dark:border-white/[0.08]">
+                          <div className="flex items-center gap-2 font-semibold text-xs text-[#1d1d1f] dark:text-[#f5f5f7]">
+                            <Truck size={16} className="text-[#34c759] dark:text-[#30d158]" />
+                            <span>Vehicle: {route.truck_registration || `Truck #${route.truck_id}`}</span>
+                            <span className="text-xs font-normal text-[#86868b]">
+                              • Driver: {route.driver_name || `#${route.driver_id}`}
+                            </span>
+                          </div>
+                          <span className="apple-badge bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]">
+                            {route.total_distance_km} km • {route.estimated_driving_hours} hrs • ₹{route.fuel_cost}
+                          </span>
+                        </div>
+
+                        {/* Stops sequence */}
+                        {Array.isArray(route.stops) && route.stops.length > 0 && (
+                          <div>
+                            <span className="text-xs font-semibold text-[#86868b] block mb-2">Stop Sequence:</span>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {route.stops.map((stop, sIdx) => (
+                                <div key={sIdx} className="flex items-center gap-1.5 text-xs">
+                                  <span className="px-3 py-1.5 rounded-xl border font-medium bg-white border-black/[0.08] text-[#1d1d1f] dark:bg-[#161618] dark:border-white/[0.08] dark:text-[#f5f5f7]">
+                                    {stop.name || stop.location || `Stop #${sIdx + 1}`}
+                                  </span>
+                                  {sIdx < route.stops.length - 1 && (
+                                    <ArrowRight size={13} className="text-[#34c759] dark:text-[#30d158] shrink-0" />
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Raw JSON inspection */}
+              {showRawJson && (
+                <pre className="rounded-2xl border border-black/[0.08] bg-[#0c1017] p-5 text-xs text-[#34c759] font-mono overflow-x-auto dark:border-white/[0.08]">
+                  {JSON.stringify(result.data, null, 2)}
+                </pre>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Reset Demo Modal */}
       {showResetModal && (

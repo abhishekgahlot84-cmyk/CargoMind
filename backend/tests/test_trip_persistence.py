@@ -95,21 +95,26 @@ def test_trip_creation_and_listing_persistence():
         trip_id = new_trip.id
         assert trip_id is not None, "Failed to persist trip to DB"
 
-        # 4. Verify via direct router function call
-        trips_from_func = get_all_trips(current_user=None, db=db)
+        # 4. Verify via direct router function call with authenticated user
+        from types import SimpleNamespace
+        auth_user = SimpleNamespace(id=1, company_id=1, role="admin")
+        trips_from_func = get_all_trips(current_user=auth_user, db=db)
         func_match = [t for t in trips_from_func if t.get("id") == trip_id]
         assert len(func_match) == 1, f"Trip {trip_id} missing from get_all_trips() direct call"
         assert func_match[0]["truck_registration"] == "TEST-TRUCK-99"
         assert func_match[0]["driver_name"] == "Test Pilot Driver"
         assert func_match[0]["pickup_location"] == "Test Origin Hub"
 
-        # 5. Verify via HTTP GET /trips/ endpoint using TestClient
+        # 5. Verify via HTTP GET /trips/ endpoint using TestClient and auth override
         from fastapi.testclient import TestClient
         from app.main import app
+        from app.routes.auth import get_current_user
+        app.dependency_overrides[get_current_user] = lambda: auth_user
         client = TestClient(app)
         resp = client.get("/trips/")
         assert resp.status_code == 200, f"GET /trips/ returned status {resp.status_code}"
         api_data = resp.json()
+        app.dependency_overrides.clear()
 
         http_match = [t for t in api_data if t.get("id") == trip_id]
         assert len(http_match) == 1, f"Trip {trip_id} missing from HTTP GET /trips/ endpoint response"

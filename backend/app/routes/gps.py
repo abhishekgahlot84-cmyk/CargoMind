@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from app.optimization.road_route import get_road_route
 from app.database.connection import get_db
 from app.database.models import GPSTracking, Trip, Order, Truck, User
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 from math import radians, sin, cos, sqrt, atan2
 
 
@@ -56,6 +56,19 @@ def distance_to_segment_km(
     return sqrt(dx * dx + dy * dy)
 
 
+def _verify_truck_access(truck_id: int, current_user: User, db: Session) -> Truck:
+    truck = db.query(Truck).filter(
+        Truck.id == truck_id,
+        Truck.company_id == current_user.company_id
+    ).first()
+    if not truck:
+        raise HTTPException(
+            status_code=404,
+            detail="Truck not found or does not belong to your company."
+        )
+    return truck
+
+
 @router.post("/")
 def create_gps_record(
     truck_id: int,
@@ -63,6 +76,7 @@ def create_gps_record(
     longitude: float,
     speed: float = 0,
     timestamp: str = "",
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     # Validate GPS coordinates
@@ -84,18 +98,8 @@ def create_gps_record(
             detail="Speed cannot be negative"
         )
 
-    # Verify that the truck exists
-    from app.database.models import Truck
-
-    truck = db.query(Truck).filter(
-        Truck.id == truck_id
-    ).first()
-
-    if not truck:
-        raise HTTPException(
-            status_code=404,
-            detail="Truck not found"
-        )
+    # Verify that the truck exists and belongs to user's workspace
+    truck = _verify_truck_access(truck_id, current_user, db)
 
     # Generate a timestamp if none was supplied
     if not timestamp:
@@ -136,28 +140,31 @@ def create_gps_record(
 
 @router.get("/")
 def get_gps_records(
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    records = db.query(GPSTracking).all()
+    records = (
+        db.query(GPSTracking)
+        .join(Truck, GPSTracking.truck_id == Truck.id)
+        .filter(Truck.company_id == current_user.company_id)
+        .all()
+    )
 
     return records
 
 
 @router.get("/simulation/fleet")
 def get_fleet_simulated_locations(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Return real-time simulated positions, driver info, and trip progress
-    for all vehicles across the user's fleet workspace.
+    for all vehicles strictly across the authenticated user's fleet workspace.
     """
     from app.optimization.gps_simulator import compute_simulated_truck_position
 
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
-
-    trucks = db.query(Truck).filter((Truck.company_id == comp_id) | (Truck.user_id == user_id)).all()
+    trucks = db.query(Truck).filter(Truck.company_id == current_user.company_id).all()
     fleet_telemetry = []
     for truck in trucks:
         sim = compute_simulated_truck_position(truck.id, db)
@@ -169,22 +176,14 @@ def get_fleet_simulated_locations(
 @router.get("/simulation/{truck_id}")
 def get_simulated_truck_location(
     truck_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Deterministic time-interpolated live position, driver data, and ETA
-    for a single vehicle.
+    for a single vehicle within user's workspace.
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
-    truck = db.query(Truck).filter(
-        Truck.id == truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
-    ).first()
-    if not truck:
-        raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
-
+    truck = _verify_truck_access(truck_id, current_user, db)
     from app.optimization.gps_simulator import compute_simulated_truck_position
     return compute_simulated_truck_position(truck_id, db)
 
@@ -192,17 +191,10 @@ def get_simulated_truck_location(
 @router.get("/{truck_id}")
 def get_truck_location(
     truck_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
-    truck = db.query(Truck).filter(
-        Truck.id == truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
-    ).first()
-    if not truck:
-        raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
+    truck = _verify_truck_access(truck_id, current_user, db)
 
     record = (
         db.query(GPSTracking)
@@ -241,18 +233,11 @@ def get_truck_location(
 def get_truck_gps_history(
     truck_id: int,
     limit: int = 100,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Retrieve chronologically ordered historical GPS trail for a truck."""
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
-    truck = db.query(Truck).filter(
-        Truck.id == truck_id,
-        (Truck.company_id == comp_id) | (Truck.user_id == user_id)
-    ).first()
-    if not truck:
-        raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company")
+    truck = _verify_truck_access(truck_id, current_user, db)
 
     records = (
         db.query(GPSTracking)
@@ -278,8 +263,10 @@ def get_truck_gps_history(
 @router.get("/{truck_id}/active-trip")
 def get_truck_active_trip(
     truck_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    truck = _verify_truck_access(truck_id, current_user, db)
     gps_record = (
         db.query(GPSTracking)
         .filter(GPSTracking.truck_id == truck_id)
@@ -348,8 +335,10 @@ def get_truck_active_trip(
 @router.get("/{truck_id}/eta")
 def get_truck_eta(
     truck_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    truck = _verify_truck_access(truck_id, current_user, db)
     # Get latest GPS location
     gps_record = (
         db.query(GPSTracking)
@@ -464,8 +453,10 @@ def get_truck_eta(
 def check_route_deviation(
     truck_id: int,
     deviation_limit_km: float = 0.5,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    truck = _verify_truck_access(truck_id, current_user, db)
     gps_record = (
         db.query(GPSTracking)
         .filter(GPSTracking.truck_id == truck_id)
@@ -660,8 +651,10 @@ def check_route_deviation(
 @router.get("/{truck_id}/direction")
 def get_truck_direction(
     truck_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    truck = _verify_truck_access(truck_id, current_user, db)
     records = (
         db.query(GPSTracking)
         .filter(GPSTracking.truck_id == truck_id)

@@ -7,7 +7,7 @@ from app.optimization.road_route import get_road_route
 from app.optimization.depot import DEPOT_LATITUDE, DEPOT_LONGITUDE
 from app.database.connection import get_db
 from app.database.models import Truck, Driver, Order, Trip, User
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 from app.optimization.load_optimizer_v4 import optimize_loads_v4
 from app.optimization.route_optimizer import optimize_route
 from app.optimization.fleet_route_optimizer import optimize_fleet_routes
@@ -81,10 +81,10 @@ def get_pending_orders_with_urgency(db: Session, company_id: int = None, diagnos
 @router.get("/load-allocation")
 def load_allocation(
     fuel_price: int = 90,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    company_id = current_user.company_id if current_user else None
+    company_id = current_user.company_id
     truck_diag = {}
     driver_diag = {}
     order_diag = {}
@@ -236,10 +236,10 @@ def calculate_route(
     truck_id: int = None,
     driver_id: int = None,
     fuel_price: int = 90,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
+    comp_id = current_user.company_id
     # Find the requested truck
     truck = None
     if truck_id:
@@ -325,8 +325,8 @@ def calculate_route(
             }
         }
 
-    # If truck has no active trip, check for pending eligible orders
-    all_pending_orders = get_pending_orders_with_urgency(db)
+    # If truck has no active trip, check for pending eligible orders strictly within company
+    all_pending_orders = get_pending_orders_with_urgency(db, company_id=comp_id)
     orders = []
     skipped = []
 
@@ -490,10 +490,10 @@ def calculate_route(
 @router.post("/fleet-route")
 def calculate_fleet_route(
     fuel_price: int = 90,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    company_id = current_user.company_id if current_user else None
+    company_id = current_user.company_id
     truck_diag = {}
     driver_diag = {}
     order_diag = {}
@@ -986,7 +986,7 @@ def get_solver_status():
 def reset_demo_fleet_endpoint(
     random_seed: int = 42,
     create_backup: bool = True,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -995,7 +995,7 @@ def reset_demo_fleet_endpoint(
     Backs up database prior to purge.
     """
     from app.optimization.demo_seeder import reset_and_seed_demo_fleet
-    company_id = current_user.company_id if current_user and current_user.company_id else 1
+    company_id = current_user.company_id
     result = reset_and_seed_demo_fleet(
         db=db,
         company_id=company_id,
@@ -1031,7 +1031,7 @@ class ConfirmRouteRequest(BaseModel):
 @router.post("/route-alternatives")
 def get_route_alternatives_endpoint(
     req: RouteAlternativesRequest,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1047,11 +1047,21 @@ def get_route_alternatives_endpoint(
     truck_id = req.truck_id
     start_time = req.start_time
 
-    # If trip_id provided, fetch coordinates and truck from trip
+    # If trip_id provided, fetch coordinates and truck from trip within company workspace
     if req.trip_id:
-        trip = db.query(Trip).filter(Trip.id == req.trip_id).first()
+        comp_id = current_user.company_id
+        trip = (
+            db.query(Trip)
+            .outerjoin(Truck, Trip.truck_id == Truck.id)
+            .outerjoin(Order, Trip.order_id == Order.id)
+            .filter(
+                Trip.id == req.trip_id,
+                (Truck.company_id == comp_id) | (Order.company_id == comp_id)
+            )
+            .first()
+        )
         if not trip:
-            raise HTTPException(status_code=404, detail="Trip not found")
+            raise HTTPException(status_code=404, detail="Trip not found or does not belong to your company")
 
         truck_id = trip.truck_id
         start_time = trip.start_time or start_time
@@ -1095,21 +1105,20 @@ def get_route_alternatives_endpoint(
 @router.post("/confirm-route")
 def confirm_route_endpoint(
     req: ConfirmRouteRequest,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Persist the selected route alternative to the Trip record.
     """
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     trip = (
         db.query(Trip)
         .outerjoin(Truck, Trip.truck_id == Truck.id)
         .outerjoin(Order, Trip.order_id == Order.id)
         .filter(
             Trip.id == req.trip_id,
-            (Trip.user_id == user_id) | (Truck.company_id == comp_id) | (Order.company_id == comp_id)
+            (Truck.company_id == comp_id) | (Order.company_id == comp_id)
         )
         .first()
     )

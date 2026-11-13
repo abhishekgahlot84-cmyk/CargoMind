@@ -209,22 +209,29 @@ def plan_journey_handovers(
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Pure algorithmic planner.
-    Walks forward along route, finding optimal handover hubs nearest to (but before)
-    the 8h driver limit, assigning rested relay drivers ranked by wellness score.
+    Driver Handover Planner strictly enforcing regulations:
+    1. If complete trip driving time <= 8.0 hours, complete with the same driver; no handover.
+    2. A driver handover must never be planned before the driver has completed 8.0 hours of driving.
+    3. For trips exceeding 8.0 hours, first handover must be at a reachable hub after 8.0 hours of driving,
+       preferring between 9.0 and 10.0 driving hours.
+    4. If no valid hub exists after the 8.0 hour minimum, returns an explicit error without early handovers.
+    5. Pure driving time along the planned route is used for all threshold calculations.
     """
     cfg = {**DEFAULT_HANDOVER_CONFIG, **(config or {})}
-    max_shift_hours = cfg["max_continuous_driving_hours"]
-    search_radius = cfg["hub_search_radius_km"]
+    search_radius = cfg.get("hub_search_radius_km", 85.0)
+    spd = max(15.0, float(avg_speed_kmph or 50.0))
 
-    # Parse start time
+    # Parse start time with timezone safety
     try:
         curr_dt = datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+        if curr_dt.tzinfo is None:
+            curr_dt = curr_dt.replace(tzinfo=timezone.utc)
     except Exception:
         curr_dt = datetime.now(timezone.utc)
 
     cum_distances = compute_cumulative_distances(route_coordinates)
     total_distance_km = cum_distances[-1] if cum_distances else 0.0
+    total_driving_hours = round(total_distance_km / spd, 2)
 
     # Locate hubs along route
     route_hubs = find_hubs_on_route(
@@ -249,32 +256,87 @@ def plan_journey_handovers(
             })
         relay_pool.sort(key=lambda x: x["wellness_score"], reverse=True)
 
+    curr_driver_id = getattr(initial_driver, "id", None) if initial_driver else None
+    curr_driver_name = getattr(initial_driver, "name", "Primary Driver") if initial_driver else "Primary Driver"
+    curr_driver_wellness = getattr(initial_driver, "wellness_score", 85) if initial_driver else 85
+
+    # -------------------------------------------------------------
+    # RULE 1: If complete trip <= 8.0 driving hours, complete with same driver (0 handovers)
+    # -------------------------------------------------------------
+    if total_driving_hours <= 8.0:
+        full_fatigue = calculate_segment_fatigue(
+            start_dt=curr_dt,
+            distance_km=total_distance_km,
+            avg_speed_kmph=spd,
+            config=cfg,
+        )
+        single_segment = {
+            "segment_index": 0,
+            "from_node": origin_name,
+            "to_node": dest_name,
+            "from_km": 0.0,
+            "to_km": round(total_distance_km, 1),
+            "distance_km": round(total_distance_km, 1),
+            "pure_driving_hours": full_fatigue["pure_driving_hours"],
+            "break_minutes": full_fatigue["break_minutes"],
+            "total_hours": full_fatigue["total_transit_hours"],
+            "effective_fatigue_hours": full_fatigue["effective_fatigue_hours"],
+            "night_hours": full_fatigue["night_hours"],
+            "start_time": curr_dt.isoformat(),
+            "arrival_time": full_fatigue["arrival_dt"].isoformat(),
+            "driver_id": curr_driver_id,
+            "driver_name": curr_driver_name,
+            "driver_wellness": curr_driver_wellness,
+            "is_final_leg": True,
+        }
+        return {
+            "status": "success",
+            "message": f"Complete trip can be driven in {total_driving_hours:.1f} hours (<= 8.0h threshold). Completed with the same driver; no driver handover required.",
+            "total_distance_km": round(total_distance_km, 1),
+            "total_driving_hours": total_driving_hours,
+            "total_break_minutes": full_fatigue["break_minutes"],
+            "total_transit_hours": full_fatigue["total_transit_hours"],
+            "total_handovers": 0,
+            "segments": [single_segment],
+            "handovers": [],
+            "warnings": [],
+            "corridor_hubs_available": [
+                {
+                    "hub_id": h["hub_id"],
+                    "hub_name": h["hub_name"],
+                    "city": h["city"],
+                    "km_along_route": h["km_along_route"],
+                    "detour_km": h["detour_km"],
+                }
+                for h in route_hubs
+            ],
+            "config_applied": cfg,
+        }
+
+    # -------------------------------------------------------------
+    # RULE 2-5: Trips > 8.0 hours require handovers strictly after >= 8.0 hours driving
+    # -------------------------------------------------------------
     segments = []
     handovers = []
     warnings = []
 
     curr_km = 0.0
     curr_node_name = origin_name
-    curr_driver_id = getattr(initial_driver, "id", None) if initial_driver else None
-    curr_driver_name = getattr(initial_driver, "name", "Primary Driver") if initial_driver else "Primary Driver"
-    curr_driver_wellness = getattr(initial_driver, "wellness_score", 85) if initial_driver else 85
-
     relay_idx = 0
     segment_idx = 0
 
     while curr_km < total_distance_km:
         remaining_km = total_distance_km - curr_km
+        remaining_driving_hours = remaining_km / spd
 
-        # Check if remaining journey can be completed without exceeding driver limit
-        full_rem_fatigue = calculate_segment_fatigue(
-            start_dt=curr_dt,
-            distance_km=remaining_km,
-            avg_speed_kmph=avg_speed_kmph,
-            config=cfg,
-        )
-
-        if full_rem_fatigue["effective_fatigue_hours"] <= max_shift_hours:
-            # Can complete entire remaining distance to destination!
+        if remaining_driving_hours <= 8.0:
+            # Remaining leg can be driven by current driver to destination!
+            final_fatigue = calculate_segment_fatigue(
+                start_dt=curr_dt,
+                distance_km=remaining_km,
+                avg_speed_kmph=spd,
+                config=cfg,
+            )
             segments.append({
                 "segment_index": segment_idx,
                 "from_node": curr_node_name,
@@ -282,77 +344,99 @@ def plan_journey_handovers(
                 "from_km": round(curr_km, 1),
                 "to_km": round(total_distance_km, 1),
                 "distance_km": round(remaining_km, 1),
-                "pure_driving_hours": full_rem_fatigue["pure_driving_hours"],
-                "break_minutes": full_rem_fatigue["break_minutes"],
-                "total_hours": full_rem_fatigue["total_transit_hours"],
-                "effective_fatigue_hours": full_rem_fatigue["effective_fatigue_hours"],
-                "night_hours": full_rem_fatigue["night_hours"],
+                "pure_driving_hours": final_fatigue["pure_driving_hours"],
+                "break_minutes": final_fatigue["break_minutes"],
+                "total_hours": final_fatigue["total_transit_hours"],
+                "effective_fatigue_hours": final_fatigue["effective_fatigue_hours"],
+                "night_hours": final_fatigue["night_hours"],
                 "start_time": curr_dt.isoformat(),
-                "arrival_time": full_rem_fatigue["arrival_dt"].isoformat(),
+                "arrival_time": final_fatigue["arrival_dt"].isoformat(),
                 "driver_id": curr_driver_id,
                 "driver_name": curr_driver_name,
                 "driver_wellness": curr_driver_wellness,
                 "is_final_leg": True,
             })
             curr_km = total_distance_km
-            curr_dt = full_rem_fatigue["arrival_dt"]
             break
 
-        # Driver limit would be exceeded. Must find handover hub before limit!
-        # Search candidate hubs between curr_km and destination reachable within 8h limit
-        candidate_hubs = []
+        # Handover required: Candidate hubs MUST have driving_hours >= 8.0 from curr_km
+        candidates_preferred = []  # 9.0h - 10.0h
+        candidates_8_to_9 = []     # 8.0h - 9.0h
+        candidates_post_10 = []    # 10.0h - 11.5h
+
         for h in route_hubs:
             h_km = h["km_along_route"]
-            # Must be ahead of current position and not virtually at the start or destination
-            if h_km > (curr_km + 15.0) and h_km < (total_distance_km - 15.0):
-                seg_fatigue = calculate_segment_fatigue(
-                    start_dt=curr_dt,
-                    distance_km=h_km - curr_km,
-                    avg_speed_kmph=avg_speed_kmph,
-                    config=cfg,
-                )
-                if seg_fatigue["effective_fatigue_hours"] <= max_shift_hours:
-                    candidate_hubs.append((h, seg_fatigue))
+            # Hub must be ahead and not virtually at the destination
+            if h_km <= (curr_km + 15.0) or h_km >= (total_distance_km - 15.0):
+                continue
 
-        if candidate_hubs:
-            # Pick hub nearest to the 8h limit (farthest forward compliant hub)
-            chosen_hub, chosen_fatigue = candidate_hubs[-1]
-        else:
-            # No hub reachable before 8h limit! Flag warning and find nearest available alternative
-            nearest_ahead = [h for h in route_hubs if h["km_along_route"] > (curr_km + 15.0)]
-            if nearest_ahead:
-                chosen_hub = nearest_ahead[0]
-                chosen_fatigue = calculate_segment_fatigue(
-                    start_dt=curr_dt,
-                    distance_km=chosen_hub["km_along_route"] - curr_km,
-                    avg_speed_kmph=avg_speed_kmph,
-                    config=cfg,
-                )
-                warnings.append(
-                    f"No hub available before the 8h limit between km {curr_km:.0f} and {chosen_hub['km_along_route']:.0f}. "
-                    f"Nearest corridor hub is '{chosen_hub['hub_name']}' at km {chosen_hub['km_along_route']:.0f} "
-                    f"({chosen_fatigue['effective_fatigue_hours']:.1f}h effective shift)."
-                )
+            seg_km = h_km - curr_km
+            seg_driving_hours = round(seg_km / spd, 2)
+
+            # RULE: A driver handover must NEVER be planned before 8.0 hours of driving
+            if seg_driving_hours < 8.0:
+                continue
+
+            seg_fatigue = calculate_segment_fatigue(
+                start_dt=curr_dt,
+                distance_km=seg_km,
+                avg_speed_kmph=spd,
+                config=cfg,
+            )
+
+            if 9.0 <= seg_driving_hours <= 10.0:
+                candidates_preferred.append((h, seg_fatigue, seg_driving_hours))
+            elif 8.0 <= seg_driving_hours < 9.0:
+                candidates_8_to_9.append((h, seg_fatigue, seg_driving_hours))
             else:
-                # No hubs whatsoever ahead
-                warnings.append(
-                    f"No corridor hubs available along the route after km {curr_km:.0f}. "
-                    "Mandatory rest stop recommended at highway transit facility."
-                )
-                # Cap segment at 8h driving distance
-                safe_dist = avg_speed_kmph * max_shift_hours * 0.95
-                chosen_fatigue = calculate_segment_fatigue(
-                    start_dt=curr_dt,
-                    distance_km=safe_dist,
-                    avg_speed_kmph=avg_speed_kmph,
-                    config=cfg,
-                )
-                chosen_hub = {
-                    "hub_id": None,
-                    "hub_name": f"Highway Rest Waypoint ({int(curr_km + safe_dist)} km)",
-                    "city": "NH Transit Point",
-                    "km_along_route": round(curr_km + safe_dist, 1),
-                }
+                candidates_post_10.append((h, seg_fatigue, seg_driving_hours))
+
+        # Select the optimal hub
+        chosen_hub = None
+        chosen_fatigue = None
+
+        if candidates_preferred:
+            # Prefer 9.0 - 10.0 hours: select candidate closest to 9.5 hours
+            candidates_preferred.sort(key=lambda x: abs(x[2] - 9.5))
+            chosen_hub, chosen_fatigue, _ = candidates_preferred[0]
+        elif candidates_8_to_9:
+            # Between 8.0 and 9.0 hours: choose the one closest to 9.0 hours
+            candidates_8_to_9.sort(key=lambda x: x[2], reverse=True)
+            chosen_hub, chosen_fatigue, _ = candidates_8_to_9[0]
+        elif candidates_post_10:
+            # Safe extension beyond 10 hours: choose closest to 10.0 hours
+            candidates_post_10.sort(key=lambda x: x[2])
+            chosen_hub, chosen_fatigue, _ = candidates_post_10[0]
+        else:
+            # RULE: If no valid handover hub exists after the 8-hour minimum,
+            # do NOT silently schedule an early handover! Return a clear planning error.
+            err_msg = (
+                f"No valid handover hub found after the 8.0-hour driving minimum (from "
+                f"km {curr_km + (8.0 * spd):.0f} onwards). "
+                "Driver handover cannot be planned before completing at least 8.0 hours of driving."
+            )
+            return {
+                "status": "error",
+                "error_code": "NO_VALID_HANDOVER_HUB",
+                "message": err_msg,
+                "total_distance_km": round(total_distance_km, 1),
+                "total_driving_hours": total_driving_hours,
+                "total_handovers": 0,
+                "segments": [],
+                "handovers": [],
+                "warnings": [err_msg],
+                "corridor_hubs_available": [
+                    {
+                        "hub_id": h["hub_id"],
+                        "hub_name": h["hub_name"],
+                        "city": h["city"],
+                        "km_along_route": h["km_along_route"],
+                        "detour_km": h["detour_km"],
+                    }
+                    for h in route_hubs
+                ],
+                "config_applied": cfg,
+            }
 
         # Select next rested relay driver (highest wellness score)
         next_driver_id = None
@@ -395,6 +479,7 @@ def plan_journey_handovers(
             "hub_name": chosen_hub.get("hub_name"),
             "city": chosen_hub.get("city"),
             "km_along_route": chosen_hub["km_along_route"],
+            "outgoing_km": chosen_hub["km_along_route"],
             "estimated_arrival": chosen_fatigue["arrival_dt"].isoformat(),
             "outgoing_driver_id": curr_driver_id,
             "outgoing_driver_name": curr_driver_name,
@@ -402,7 +487,8 @@ def plan_journey_handovers(
             "incoming_driver_id": next_driver_id,
             "incoming_driver_name": next_driver_name,
             "incoming_driver_wellness": next_driver_wellness,
-            "recommendation": f"Complete handover at {chosen_hub['hub_name']}, then rest 8h.",
+            "driving_hours_before_handover": chosen_fatigue["pure_driving_hours"],
+            "recommendation": f"Complete handover at {chosen_hub['hub_name']} after {chosen_fatigue['pure_driving_hours']:.1f}h driving, then rest 8h.",
             "status": "planned",
         })
 
@@ -415,15 +501,15 @@ def plan_journey_handovers(
         curr_driver_wellness = next_driver_wellness
         segment_idx += 1
 
-    total_driving_hours = sum(s["pure_driving_hours"] for s in segments)
+    total_driving = sum(s["pure_driving_hours"] for s in segments)
     total_break_mins = sum(s["break_minutes"] for s in segments)
 
     return {
         "status": "success",
         "total_distance_km": round(total_distance_km, 1),
-        "total_driving_hours": round(total_driving_hours, 2),
+        "total_driving_hours": round(total_driving, 2),
         "total_break_minutes": total_break_mins,
-        "total_transit_hours": round((total_driving_hours * 60 + total_break_mins) / 60.0, 2),
+        "total_transit_hours": round((total_driving * 60 + total_break_mins) / 60.0, 2),
         "total_handovers": len(handovers),
         "segments": segments,
         "handovers": handovers,

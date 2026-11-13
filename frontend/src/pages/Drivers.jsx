@@ -20,6 +20,7 @@ import {
   FileSpreadsheet,
   Check,
   Clock,
+  RotateCcw,
 } from "lucide-react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -43,6 +44,9 @@ export default function Drivers() {
   const [selectedStatus, setSelectedStatus] = useState("all");
 
   const [showModal, setShowModal] = useState(false);
+  const [resettingId, setResettingId] = useState(null);
+  const [resettingAll, setResettingAll] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -102,6 +106,38 @@ export default function Drivers() {
       setError("Unable to load fleet drivers. Please verify the backend service.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResetDriverStatus(driver) {
+    try {
+      setResettingId(driver.id);
+      setError("");
+      const res = await api.post(`/drivers/${driver.id}/reset-status`);
+      setToastMessage(res.data?.message || `Driver ${driver.name} is now available.`);
+      setTimeout(() => setToastMessage(""), 4500);
+      await fetchDrivers();
+    } catch (err) {
+      console.error("Failed to reset driver status:", err);
+      setError(err.response?.data?.detail || `Failed to reset driver ${driver.name}`);
+    } finally {
+      setResettingId(null);
+    }
+  }
+
+  async function handleResetAllIdle() {
+    try {
+      setResettingAll(true);
+      setError("");
+      const res = await api.post("/drivers/reset-all-idle");
+      setToastMessage(res.data?.message || "All idle drivers successfully reset to available.");
+      setTimeout(() => setToastMessage(""), 4500);
+      await fetchDrivers();
+    } catch (err) {
+      console.error("Failed to reset idle drivers:", err);
+      setError(err.response?.data?.detail || "Failed to reset idle drivers");
+    } finally {
+      setResettingAll(false);
     }
   }
 
@@ -204,11 +240,11 @@ export default function Drivers() {
       if (form.notes) params.notes = form.notes.trim();
 
       if (isEditing) {
-        await api.put(`/drivers/${editingId}`, null, { params });
+        await api.put(`/drivers/${editingId}`, params, { params });
         setFormSuccess("Driver updated.");
       } else {
         params.company_id = Number(user?.company_id || form.company_id || 1);
-        await api.post("/drivers/", null, { params });
+        await api.post("/drivers/", params, { params });
         setFormSuccess("Driver registered.");
       }
 
@@ -495,7 +531,16 @@ Suresh Patel,Hazardous Materials Endorsement,GJ0120170067890,+91 98250 67890,10,
           </div>
         </div>
 
-        <div className="flex gap-2.5">
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            onClick={handleResetAllIdle}
+            disabled={resettingAll || loading}
+            className="apple-btn-secondary text-xs"
+            title="Reset status of all idle crew members back to available"
+          >
+            <RotateCcw size={13} className={resettingAll ? "animate-spin" : ""} />
+            {resettingAll ? "Resetting..." : "Reset Idle Crew"}
+          </button>
           <button onClick={handleOpenBulkModal} className="apple-btn-secondary text-xs">
             <UploadCloud size={14} />
             Bulk Import
@@ -514,6 +559,18 @@ Suresh Patel,Hazardous Materials Endorsement,GJ0120170067890,+91 98250 67890,10,
           </button>
         </div>
       </header>
+
+      {toastMessage && (
+        <div className="mb-6 flex items-center justify-between gap-2 rounded-2xl border border-[#34c759]/25 bg-[#34c759]/10 p-4 text-xs font-medium text-[#34c759] dark:text-[#30d158] transition-all animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="shrink-0" />
+            <span>{toastMessage}</span>
+          </div>
+          <button onClick={() => setToastMessage("")} className="text-[#34c759]/70 hover:text-[#34c759]">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -737,21 +794,46 @@ Suresh Patel,Hazardous Materials Endorsement,GJ0120170067890,+91 98250 67890,10,
                           </span>
                         </div>
                       ) : (
-                        <span className={`apple-badge ${
-                          driver.status === "available"
-                            ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
-                            : driver.status === "assigned" || driver.status === "busy"
-                            ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
-                            : driver.status === "off_duty"
-                            ? "bg-[#ff9500]/10 text-[#ff9500] dark:bg-[#ff9f0a]/15 dark:text-[#ff9f0a]"
-                            : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
-                        }`}>
-                          {driver.status || "Unknown"}
-                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className={`apple-badge ${
+                            driver.status === "available"
+                              ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+                              : driver.status === "assigned" || driver.status === "busy"
+                              ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
+                              : driver.status === "off_duty"
+                              ? "bg-[#ff9500]/10 text-[#ff9500] dark:bg-[#ff9f0a]/15 dark:text-[#ff9f0a]"
+                              : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
+                          }`}>
+                            {driver.status || "Unknown"}
+                          </span>
+                          {driver.status !== "available" && (
+                            <button
+                              onClick={() => handleResetDriverStatus(driver)}
+                              disabled={resettingId === driver.id}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#0071e3] hover:underline dark:text-[#2997ff] transition"
+                              title="Reset status and mark driver as available for new dispatches"
+                            >
+                              <RotateCcw size={10} className={resettingId === driver.id ? "animate-spin" : ""} />
+                              <span>{resettingId === driver.id ? "Resetting..." : "Make Available"}</span>
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => handleResetDriverStatus(driver)}
+                          disabled={resettingId === driver.id}
+                          className={`p-1 rounded-md transition ${
+                            driver.status !== "available"
+                              ? "text-[#0071e3] hover:bg-[#0071e3]/10 dark:text-[#2997ff]"
+                              : "text-[#86868b] hover:text-[#0071e3] hover:bg-black/[0.05] dark:hover:bg-white/[0.05]"
+                          }`}
+                          title="Reset Driver Status to Available"
+                        >
+                          <RotateCcw size={14} className={resettingId === driver.id ? "animate-spin" : ""} />
+                        </button>
                         <button
                           onClick={() => handleOpenRestModal(driver)}
                           className="p-1 rounded-md text-[#86868b] hover:text-purple-600 hover:bg-purple-500/10 transition dark:hover:text-purple-400"

@@ -4,7 +4,7 @@ from typing import Optional, List
 
 from app.database.connection import get_db
 from app.database.models import Hub, DriverHandover, Trip, User
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 
 router = APIRouter(
     prefix="/hubs",
@@ -55,10 +55,10 @@ def create_hub(
     contact_phone: str = None,
     notes: str = None,
     company_id: int = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    target_company_id = company_id if (company_id and company_id != 1) else current_user.company_id
+    target_company_id = current_user.company_id
 
     if hub_type not in HUB_TYPES:
         raise HTTPException(status_code=400, detail=f"hub_type must be one of {HUB_TYPES}")
@@ -123,11 +123,11 @@ def create_hub(
 def get_hubs(
     hub_type: Optional[str] = None,
     operational_status: Optional[str] = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     query = db.query(Hub).filter(
-        (Hub.user_id == current_user.id) | (Hub.company_id == current_user.company_id)
+        Hub.company_id == current_user.company_id
     )
     if hub_type:
         query = query.filter(Hub.hub_type == hub_type)
@@ -141,7 +141,7 @@ def get_hubs(
 @router.get("/{hub_id}")
 def get_hub(
     hub_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     hub = db.query(Hub).filter(Hub.id == hub_id, Hub.company_id == current_user.company_id).first()
@@ -167,9 +167,10 @@ def update_hub(
     contact_name: str = None,
     contact_phone: str = None,
     notes: str = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    hub = db.query(Hub).filter(Hub.id == hub_id).first()
+    hub = db.query(Hub).filter(Hub.id == hub_id, Hub.company_id == current_user.company_id).first()
     if not hub:
         raise HTTPException(status_code=404, detail="Hub not found")
 
@@ -225,9 +226,10 @@ def update_hub(
 def delete_hub(
     hub_id: int,
     force: bool = False,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    hub = db.query(Hub).filter(Hub.id == hub_id).first()
+    hub = db.query(Hub).filter(Hub.id == hub_id, Hub.company_id == current_user.company_id).first()
     if not hub:
         raise HTTPException(status_code=404, detail="Hub not found")
 
@@ -246,13 +248,6 @@ def delete_hub(
             )
         )
 
-    if not force and not active_handover:
-        # Safe to delete
-        pass
-    elif active_handover and not force:
-        # Already raised above
-        pass
-
     try:
         db.delete(hub)
         db.commit()
@@ -266,11 +261,17 @@ def delete_hub(
 @router.patch("/{hub_id}/deactivate")
 def deactivate_hub(
     hub_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    hub = db.query(Hub).filter(Hub.id == hub_id).first()
+    hub = db.query(Hub).filter(Hub.id == hub_id, Hub.company_id == current_user.company_id).first()
     if not hub:
         raise HTTPException(status_code=404, detail="Hub not found")
+
+    hub.operational_status = "inactive"
+    db.commit()
+    db.refresh(hub)
+    return {"message": "Hub deactivated", "hub": _hub_dict(hub)}
 
     hub.operational_status = "inactive"
     db.commit()

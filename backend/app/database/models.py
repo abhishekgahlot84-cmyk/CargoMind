@@ -55,6 +55,7 @@ class Truck(Base):
     trips_since_service = Column(Integer, default=0)
     km_since_service = Column(Float, default=0.0)
     last_service_date = Column(String(50))
+    turnaround_until = Column(String(50), nullable=True)  # ISO datetime when post-trip turnaround completes
 
     company_id = Column(Integer, ForeignKey("companies.id"))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -218,6 +219,7 @@ class Trip(Base):
     daily_schedule = Column(JSON, nullable=True)
     planned_route = Column(JSON, nullable=True)
     start_time = Column(String(50), nullable=True)
+    completed_at = Column(String(50), nullable=True)
     average_speed_kmph = Column(Float, default=45.0)
 
     driver_assignments = relationship(

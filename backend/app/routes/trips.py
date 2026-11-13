@@ -1,10 +1,12 @@
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Union, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.optimization.multi_day_scheduler import schedule_multi_day_trip
 from app.optimization.driver_rotation import build_driver_rotation_schedule
+from app.optimization.wellness import update_and_persist_driver_wellness
 from app.database.connection import get_db
 from app.database.models import (
     Trip,
@@ -14,7 +16,7 @@ from app.database.models import (
     TripDriverAssignment,
     User,
 )
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 
 router = APIRouter(
     prefix="/trips",
@@ -33,10 +35,36 @@ class AutomaticDriverAllocation(BaseModel):
 class TripTruckUpdate(BaseModel):
     truck_id: int = Field(gt=0)
 
+
+class TripCreate(BaseModel):
+    order_id: Optional[Union[int, str]] = None
+    truck_id: Optional[Union[int, str]] = None
+    driver_id: Optional[Union[int, str]] = None
+    distance: Optional[Union[float, str]] = 0.0
+    estimated_time: Optional[Union[int, str]] = 0
+    fuel_cost: Optional[Union[int, str]] = 0
+    daily_schedule: Optional[List[Dict[str, Any]]] = None
+
+
+class AutoAllocateRequest(BaseModel):
+    order_id: Optional[Union[int, str]] = None
+
+def _check_trip_access(trip: Trip, current_user: User):
+    comp_id = current_user.company_id
+    if trip.truck and trip.truck.company_id == comp_id:
+        return
+    if trip.order and trip.order.company_id == comp_id:
+        return
+    if getattr(trip, "user_id", None) == current_user.id:
+        return
+    raise HTTPException(status_code=403, detail="Access denied to this trip record.")
+
+
 @router.patch("/{trip_id}/truck")
 def update_trip_truck(
     trip_id: int,
     request: TripTruckUpdate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     # 1. Find the trip.
@@ -49,6 +77,7 @@ def update_trip_truck(
             status_code=404,
             detail="Trip not found",
         )
+    _check_trip_access(trip, current_user)
 
     # 2. Do not change the truck after driver
     # rotation assignments have been saved.
@@ -266,7 +295,7 @@ def update_trip_truck(
 
 @router.get("/")
 def get_all_trips(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     query = (
@@ -276,10 +305,8 @@ def get_all_trips(
         .outerjoin(Order, Trip.order_id == Order.id)
     )
 
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     query = query.filter(
-        (Trip.user_id == user_id) |
         (Truck.company_id == comp_id) |
         (Order.company_id == comp_id)
     )
@@ -307,6 +334,7 @@ def get_all_trips(
             "pickup_location": trip.order.pickup_location if trip.order else "Origin Hub",
             "delivery_location": trip.order.delivery_location if trip.order else "Destination Terminal",
             "order_weight": trip.order.weight if trip.order else None,
+            "completed_at": trip.completed_at,
         }
         result.append(t_dict)
 
@@ -315,14 +343,13 @@ def get_all_trips(
 @router.get("/truck/{truck_id}")
 def get_trips_by_truck(
     truck_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     truck = (
         db.query(Truck)
-        .filter(Truck.id == truck_id, (Truck.company_id == comp_id) | (Truck.user_id == user_id))
+        .filter(Truck.id == truck_id, Truck.company_id == comp_id)
         .first()
     )
 
@@ -343,14 +370,13 @@ def get_trips_by_truck(
 @router.get("/driver/{driver_id}")
 def get_trips_by_driver(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     driver = (
         db.query(Driver)
-        .filter(Driver.id == driver_id, (Driver.company_id == comp_id) | (Driver.user_id == user_id))
+        .filter(Driver.id == driver_id, Driver.company_id == comp_id)
         .first()
     )
 
@@ -371,14 +397,13 @@ def get_trips_by_driver(
 @router.get("/order/{order_id}")
 def get_trips_by_order(
     order_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     order = (
         db.query(Order)
-        .filter(Order.id == order_id, (Order.company_id == comp_id) | (Order.user_id == user_id))
+        .filter(Order.id == order_id, Order.company_id == comp_id)
         .first()
     )
 
@@ -399,18 +424,17 @@ def get_trips_by_order(
 @router.get("/{trip_id}")
 def get_trip(
     trip_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
+    comp_id = current_user.company_id
     trip = (
         db.query(Trip)
         .outerjoin(Truck, Trip.truck_id == Truck.id)
         .outerjoin(Order, Trip.order_id == Order.id)
         .filter(
             Trip.id == trip_id,
-            (Trip.user_id == user_id) | (Truck.company_id == comp_id) | (Order.company_id == comp_id)
+            (Truck.company_id == comp_id) | (Order.company_id == comp_id)
         )
         .first()
     )
@@ -426,25 +450,44 @@ def get_trip(
 
 @router.post("/auto-allocate")
 def auto_allocate_trip(
-    order_id: int,
+    order_id: Optional[int] = None,
+    payload: Optional[AutoAllocateRequest] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    raw_order_id = payload.order_id if (payload and payload.order_id is not None) else order_id
+    eff_order_id = None
+    if raw_order_id is not None:
+        try:
+            eff_order_id = int(float(str(raw_order_id).strip()))
+        except (ValueError, TypeError):
+            eff_order_id = None
+
+    if not eff_order_id:
+        raise HTTPException(
+            status_code=400,
+            detail="order_id is required."
+        )
+
     active_statuses = ["planned", "in_progress"]
 
-    # 1. Verify order exists
-    order = db.query(Order).filter(Order.id == order_id).first()
+    # 1. Verify order exists and belongs to current user's workspace
+    order = db.query(Order).filter(
+        Order.id == eff_order_id,
+        Order.company_id == current_user.company_id
+    ).first()
     if not order:
         raise HTTPException(
             status_code=404,
-            detail=f"Order ID {order_id} not found"
+            detail=f"Order ID {eff_order_id} not found or access denied."
         )
 
     # 2. Check if order already has an active trip
-    existing_trip = db.query(Trip).filter(Trip.order_id == order_id).first()
+    existing_trip = db.query(Trip).filter(Trip.order_id == eff_order_id).first()
     if existing_trip:
         raise HTTPException(
             status_code=409,
-            detail=f"Order {order_id} already allocated to trip #{existing_trip.id} ({existing_trip.status})"
+            detail=f"Order {eff_order_id} already allocated to trip #{existing_trip.id} ({existing_trip.status})"
         )
 
     # 3. Find busy trucks
@@ -452,26 +495,21 @@ def auto_allocate_trip(
         row[0] for row in db.query(Trip.truck_id).filter(Trip.status.in_(active_statuses)).distinct().all()
     }
 
-    # 4. Find available truck with matching company and capacity
-    trucks = db.query(Truck).filter(Truck.status == "available").all()
+    # 4. Find available truck strictly within user's workspace with matching capacity
+    trucks = db.query(Truck).filter(
+        Truck.status == "available",
+        Truck.company_id == current_user.company_id
+    ).all()
     eligible_trucks = [
         t for t in trucks
         if t.id not in busy_truck_ids
         and (t.capacity or 0) >= (order.weight or 0)
-        and (t.company_id == order.company_id or not order.company_id)
     ]
-    if not eligible_trucks:
-        # Fallback without company filter if company is default
-        eligible_trucks = [
-            t for t in trucks
-            if t.id not in busy_truck_ids
-            and (t.capacity or 0) >= (order.weight or 0)
-        ]
 
     if not eligible_trucks:
         raise HTTPException(
             status_code=409,
-            detail=f"No available truck with capacity >= {order.weight} kg found."
+            detail=f"No available truck with capacity >= {order.weight} kg found in your fleet."
         )
 
     # 5. Find busy drivers
@@ -479,20 +517,20 @@ def auto_allocate_trip(
         row[0] for row in db.query(Trip.driver_id).filter(Trip.status.in_(active_statuses)).distinct().all()
     }
 
-    # 6. Find available driver
-    drivers = db.query(Driver).filter(Driver.status == "available").all()
+    # 6. Find available driver strictly within user's workspace
+    drivers = db.query(Driver).filter(
+        Driver.status == "available",
+        Driver.company_id == current_user.company_id
+    ).all()
     eligible_drivers = [
         d for d in drivers
         if d.id not in busy_driver_ids
-        and (d.company_id == order.company_id or not order.company_id)
     ]
-    if not eligible_drivers:
-        eligible_drivers = [d for d in drivers if d.id not in busy_driver_ids]
 
     if not eligible_drivers:
         raise HTTPException(
             status_code=409,
-            detail="No available driver found for allocation."
+            detail="No available driver found for allocation in your workspace."
         )
 
     selected_truck = eligible_trucks[0]
@@ -567,129 +605,162 @@ def auto_allocate_trip(
 
 @router.post("/")
 def create_trip(
-    truck_id: int,
-    driver_id: int,
-    order_id: int,
-    distance: float = 0.0,
-    estimated_time: int = 0,
-    fuel_cost: int = 0,
+    truck_id: Optional[int] = None,
+    driver_id: Optional[int] = None,
+    order_id: Optional[int] = None,
+    distance: Optional[float] = 0.0,
+    estimated_time: Optional[int] = 0,
+    fuel_cost: Optional[int] = 0,
+    payload: Optional[TripCreate] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     active_statuses = ["planned", "in_progress"]
 
-    # 1. Verify the order exists
+    def _safe_int(val):
+        if val is None or val == "" or str(val).strip().lower() in ("null", "none"):
+            return None
+        try:
+            parsed = int(float(str(val).strip()))
+            return parsed if parsed > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    def _safe_float(val, default=0.0):
+        if val is None or val == "" or str(val).strip().lower() in ("null", "none"):
+            return default
+        try:
+            return float(str(val).strip())
+        except (ValueError, TypeError):
+            return default
+
+    eff_order_id = _safe_int(payload.order_id if payload and payload.order_id is not None else order_id)
+    eff_truck_id = _safe_int(payload.truck_id if payload and payload.truck_id is not None else truck_id)
+    eff_driver_id = _safe_int(payload.driver_id if payload and payload.driver_id is not None else driver_id)
+    eff_distance = _safe_float(payload.distance if payload and payload.distance is not None else distance, default=0.0)
+    eff_estimated_time = _safe_int(payload.estimated_time if payload and payload.estimated_time is not None else estimated_time) or 0
+    eff_fuel_cost = _safe_int(payload.fuel_cost if payload and payload.fuel_cost is not None else fuel_cost) or 0
+
+    if not eff_order_id:
+        raise HTTPException(status_code=400, detail="order_id is required.")
+
+    # 1. Verify the order exists and belongs to current user's workspace
     order = db.query(Order).filter(
-        Order.id == order_id
+        Order.id == eff_order_id,
+        Order.company_id == current_user.company_id
     ).first()
 
     if not order:
         raise HTTPException(
             status_code=404,
-            detail=f"Order ID {order_id} not found"
+            detail=f"Order ID {eff_order_id} not found or access denied."
         )
 
-    # 2. Do not allocate an order that already has a trip
+    # 2. Do not allocate an order that already has an active trip
     existing_trip = db.query(Trip).filter(
-        Trip.order_id == order_id
+        Trip.order_id == eff_order_id
     ).first()
 
     if existing_trip:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Order {order_id} already has trip "
+                f"Order {eff_order_id} already has trip "
                 f"ID {existing_trip.id} with status "
                 f"'{existing_trip.status}'."
             )
         )
 
     # 3. Find trucks already reserved by active trips
-    busy_truck_ids = db.query(
-        Trip.truck_id
-    ).filter(
-        Trip.status.in_(active_statuses)
-    ).distinct().all()
-
     busy_truck_ids = {
-        row[0] for row in busy_truck_ids
+        row[0] for row in db.query(Trip.truck_id).filter(Trip.status.in_(active_statuses)).distinct().all()
     }
 
     # 4. Find drivers already reserved by active trips
-    busy_driver_ids = db.query(
-        Trip.driver_id
-    ).filter(
-        Trip.status.in_(active_statuses)
-    ).distinct().all()
-
     busy_driver_ids = {
-        row[0] for row in busy_driver_ids
+        row[0] for row in db.query(Trip.driver_id).filter(Trip.status.in_(active_statuses)).distinct().all()
     }
 
-    # 5. Select an available truck with enough capacity
-    trucks = db.query(Truck).all()
+    # 5. Select truck within user's workspace
+    if eff_truck_id:
+        truck = db.query(Truck).filter(
+            Truck.id == eff_truck_id,
+            Truck.company_id == current_user.company_id
+        ).first()
+        if not truck:
+            raise HTTPException(status_code=404, detail="Truck not found or does not belong to your company.")
+        if truck.id in busy_truck_ids:
+            raise HTTPException(status_code=409, detail=f"Truck {truck.registration_number} is already assigned to an active trip.")
+        if truck.status != "available":
+            raise HTTPException(status_code=400, detail=f"Truck {truck.registration_number} is currently '{truck.status}' and not available for new trips.")
+        if (truck.capacity or 0) < (order.weight or 0):
+            raise HTTPException(status_code=400, detail=f"Truck capacity ({truck.capacity} kg) is insufficient for order weight ({order.weight} kg).")
+    else:
+        trucks = db.query(Truck).filter(
+            Truck.company_id == current_user.company_id,
+            Truck.status == "available"
+        ).all()
+        available_trucks = [
+            t for t in trucks
+            if t.id not in busy_truck_ids
+            and (t.capacity or 0) >= (order.weight or 0)
+        ]
+        if not available_trucks:
+            raise HTTPException(status_code=409, detail="No available truck has sufficient capacity for this order.")
+        truck = available_trucks[0]
 
-    available_trucks = [
-        truck for truck in trucks
-        if truck.id not in busy_truck_ids
-        and (truck.capacity or 0) >= (order.weight or 0)
-    ]
+    # 6. Select driver within user's workspace
+    if eff_driver_id:
+        driver = db.query(Driver).filter(
+            Driver.id == eff_driver_id,
+            Driver.company_id == current_user.company_id
+        ).first()
+        if not driver:
+            raise HTTPException(status_code=404, detail="Driver not found or does not belong to your company.")
+        if driver.id in busy_driver_ids:
+            raise HTTPException(status_code=409, detail=f"Driver {driver.name} is already assigned to an active trip.")
+        if driver.status != "available":
+            raise HTTPException(status_code=400, detail=f"Driver {driver.name} is currently '{driver.status}' and not available for new trips.")
+    else:
+        drivers = db.query(Driver).filter(
+            Driver.company_id == current_user.company_id,
+            Driver.status == "available"
+        ).all()
+        available_drivers = [d for d in drivers if d.id not in busy_driver_ids]
+        if not available_drivers:
+            raise HTTPException(status_code=409, detail="No available driver found in your workspace.")
+        driver = available_drivers[0]
 
-    if not available_trucks:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "No available truck has sufficient capacity "
-                "for this order."
-            )
-        )
-
-    # 6. Select an available driver
-    drivers = db.query(Driver).all()
-
-    available_drivers = [
-        driver for driver in drivers
-        if driver.id not in busy_driver_ids
-    ]
-
-    if not available_drivers:
-        raise HTTPException(
-            status_code=409,
-            detail="No available driver found."
-        )
-
-    # 7. Allocate the first eligible truck and driver
-    truck = available_trucks[0]
-    driver = available_drivers[0]
-
-        # 8. Generate the daily schedule automatically
-    if estimated_time <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="estimated_time must be greater than zero."
-        )
+    resolved_dist = float(eff_distance) if eff_distance and eff_distance > 0 else float(order.distance_km or 100.0)
+    resolved_time = int(eff_estimated_time) if eff_estimated_time > 0 else max(1, int(round(resolved_dist / 50.0)))
+    resolved_fuel = int(eff_fuel_cost) if eff_fuel_cost > 0 else int(resolved_dist * 15)
 
     schedule_result = schedule_multi_day_trip(
-        distance_km=distance,
-        estimated_time_hours=estimated_time,
+        distance_km=resolved_dist,
+        estimated_time_hours=resolved_time,
         daily_working_hours=8,
         rest_hours=9,
     )
 
-    daily_schedule = schedule_result["daily_schedule"]
+    daily_schedule = payload.daily_schedule if (payload and payload.daily_schedule) else schedule_result["daily_schedule"]
 
     trip = Trip(
         truck_id=truck.id,
         driver_id=driver.id,
         order_id=order.id,
-        distance=distance,
-        estimated_time=estimated_time,
-        fuel_cost=fuel_cost,
+        distance=resolved_dist,
+        estimated_time=resolved_time,
+        fuel_cost=resolved_fuel,
         status="planned",
-        daily_schedule=daily_schedule
+        daily_schedule=daily_schedule,
+        user_id=current_user.id
     )
 
     try:
         db.add(trip)
+        order.status = "assigned"
+        truck.status = "assigned"
+        driver.status = "assigned"
         db.commit()
         db.refresh(trip)
     except Exception:
@@ -697,7 +768,7 @@ def create_trip(
         raise
 
     return {
-        "message": "Trip automatically allocated successfully",
+        "message": "Trip allocated successfully",
         "trip": {
             "id": trip.id,
             "truck_id": trip.truck_id,
@@ -720,6 +791,7 @@ def create_trip(
 def update_trip_status(
     trip_id: int,
     status: str,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     trip = db.query(Trip).filter(
@@ -731,6 +803,8 @@ def update_trip_status(
             status_code=404,
             detail="Trip not found"
         )
+
+    _check_trip_access(trip, current_user)
 
     allowed_statuses = [
         "planned",
@@ -746,7 +820,7 @@ def update_trip_status(
         )
 
     valid_transitions = {
-        "planned": ["in_progress", "cancelled"],
+        "planned": ["in_progress", "completed", "cancelled"],
         "in_progress": ["completed", "cancelled"],
         "completed": [],
         "cancelled": []
@@ -760,6 +834,8 @@ def update_trip_status(
 
     # Update trip status
     trip.status = status
+    if status == "completed":
+        trip.completed_at = datetime.now(timezone.utc).isoformat()
 
     # Find other trips reserving this truck
     active_statuses = ["planned", "in_progress"]
@@ -786,6 +862,8 @@ def update_trip_status(
         truck.status = (
             "assigned" if other_truck_trip else "available"
         )
+        if status == "completed" and not other_truck_trip:
+            truck.turnaround_until = None
 
     # Update driver availability
     driver = db.query(Driver).filter(
@@ -796,6 +874,15 @@ def update_trip_status(
         driver.status = (
             "busy" if other_driver_trip else "available"
         )
+        if status == "completed" and not other_driver_trip:
+            driver.rest_until = None
+            driver.hours_driven_24h = 0.0
+            driver.night_driving_hours = 0.0
+            driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+            try:
+                update_and_persist_driver_wellness(driver, db=db, persist_history=False)
+            except Exception:
+                pass
 
     # Synchronize order status
     order = db.query(Order).filter(
@@ -822,9 +909,116 @@ def update_trip_status(
         raise
 
 
+@router.post("/{trip_id}/complete-and-release")
+def complete_and_release_trip(
+    trip_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Complete the trip and immediately release both truck and driver back to 'available'.
+    """
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    _check_trip_access(trip, current_user)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    trip.status = "completed"
+    trip.completed_at = now_iso
+
+    # Update order
+    order = db.query(Order).filter(Order.id == trip.order_id).first()
+    if order:
+        order.status = "completed"
+
+    # Release truck
+    truck = db.query(Truck).filter(Truck.id == trip.truck_id).first()
+    if truck:
+        truck.status = "available"
+        truck.turnaround_until = None
+        truck.trips_since_service = (truck.trips_since_service or 0) + 1
+        truck.km_since_service = (truck.km_since_service or 0.0) + float(trip.distance or 0.0)
+
+    # Release driver
+    driver = db.query(Driver).filter(Driver.id == trip.driver_id).first()
+    if driver:
+        driver.status = "available"
+        driver.rest_until = None
+        driver.hours_driven_24h = 0.0
+        driver.night_driving_hours = 0.0
+        driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+        try:
+            update_and_persist_driver_wellness(driver, db=db, persist_history=False)
+        except Exception:
+            pass
+
+    try:
+        db.commit()
+        db.refresh(trip)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to complete and release trip: {str(e)}")
+
+    return {
+        "message": f"Trip #{trip.id} completed. Truck and driver released to available.",
+        "trip_id": trip.id,
+        "truck_status": truck.status if truck else None,
+        "driver_status": driver.status if driver else None,
+    }
+
+
+@router.post("/{trip_id}/reset-resources")
+def reset_trip_resources(
+    trip_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Reset and immediately release the truck and driver assigned to this trip back to 'available'.
+    """
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    _check_trip_access(trip, current_user)
+
+    truck = db.query(Truck).filter(Truck.id == trip.truck_id).first()
+    driver = db.query(Driver).filter(Driver.id == trip.driver_id).first()
+
+    if truck:
+        truck.status = "available"
+        truck.turnaround_until = None
+
+    if driver:
+        driver.status = "available"
+        driver.rest_until = None
+        driver.hours_driven_24h = 0.0
+        driver.night_driving_hours = 0.0
+        driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+        try:
+            update_and_persist_driver_wellness(driver, db=db, persist_history=False)
+        except Exception:
+            pass
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reset resources: {str(e)}")
+
+    return {
+        "message": f"Resources for Trip #{trip.id} reset to available.",
+        "truck_id": truck.id if truck else None,
+        "truck_status": truck.status if truck else None,
+        "driver_id": driver.id if driver else None,
+        "driver_status": driver.status if driver else None,
+    }
+
+
 @router.delete("/{trip_id}")
 def delete_trip(
     trip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
@@ -833,6 +1027,7 @@ def delete_trip(
             status_code=404,
             detail="Trip not found"
         )
+    _check_trip_access(trip, current_user)
 
     truck_id = trip.truck_id
     driver_id = trip.driver_id
@@ -877,22 +1072,12 @@ def delete_trip(
         "order_id": order_id
     }
 
-    return {
-        "message": "Trip status updated successfully",
-        "trip_id": trip.id,
-        "truck_id": trip.truck_id,
-        "driver_id": trip.driver_id,
-        "trip_status": trip.status,
-        "truck_status": truck.status if truck else None,
-        "driver_status": driver.status if driver else None,
-        "order_status": order.status if order else None
-    }
-
 
 @router.post("/{trip_id}/driver-assignments")
 def create_driver_assignment(
     trip_id: int,
     assignment_data: DriverAssignmentCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     # 1. Check that the trip exists
@@ -905,6 +1090,7 @@ def create_driver_assignment(
             status_code=404,
             detail="Trip not found"
         )
+    _check_trip_access(trip, current_user)
 
     # 2. Validate the segment boundaries
     if trip.distance is None or trip.distance <= 0:
@@ -1035,6 +1221,7 @@ def create_driver_assignment(
 @router.get("/{trip_id}/driver-assignments")
 def get_trip_driver_assignments(
     trip_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     trip = db.query(Trip).filter(
@@ -1046,6 +1233,7 @@ def get_trip_driver_assignments(
             status_code=404,
             detail="Trip not found"
         )
+    _check_trip_access(trip, current_user)
 
     assignments = db.query(
         TripDriverAssignment
@@ -1073,10 +1261,12 @@ def get_trip_driver_assignments(
 @router.get("/drivers/{driver_id}/assignments")
 def get_driver_assignments(
     driver_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     driver = db.query(Driver).filter(
-        Driver.id == driver_id
+        Driver.id == driver_id,
+        Driver.company_id == current_user.company_id
     ).first()
 
     if not driver:
@@ -1115,6 +1305,7 @@ def get_driver_assignments(
 def delete_trip_driver_assignment(
     trip_id: int,
     assignment_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     trip = db.query(Trip).filter(
@@ -1126,6 +1317,7 @@ def delete_trip_driver_assignment(
             status_code=404,
             detail="Trip not found"
         )
+    _check_trip_access(trip, current_user)
 
     assignment = db.query(
         TripDriverAssignment
@@ -1153,12 +1345,14 @@ def delete_trip_driver_assignment(
 def auto_allocate_drivers(
     trip_id: int,
     request: AutomaticDriverAllocation,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     trip = db.query(Trip).filter(Trip.id == trip_id).first()
 
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+    _check_trip_access(trip, current_user)
 
     if trip.distance is None or trip.distance <= 0:
         raise HTTPException(

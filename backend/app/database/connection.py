@@ -182,32 +182,54 @@ def init_engine():
 
 engine = init_engine()
 
-# Safe auto-migration for newly added model columns
-try:
-    from sqlalchemy import text
-    with engine.connect() as _conn:
-        if engine.dialect.name == "sqlite":
-            for _t in ["trucks", "drivers", "orders", "trips", "hubs"]:
-                _tbl = _conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{_t}';")).first()
-                if _tbl:
-                    _cols = [r[1] for r in _conn.execute(text(f"PRAGMA table_info({_t});")).fetchall()]
-                    if "user_id" not in _cols:
-                        _conn.execute(text(f"ALTER TABLE {_t} ADD COLUMN user_id INTEGER;"))
-                    if _t == "drivers" and "rest_until" not in _cols:
-                        _conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
-            _conn.commit()
-        elif engine.dialect.name == "postgresql":
-            _conn.execute(text("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS rest_until VARCHAR(50);"))
-            for _t in ["trucks", "drivers", "orders", "trips", "hubs"]:
-                _conn.execute(text(f"ALTER TABLE {_t} ADD COLUMN IF NOT EXISTS user_id INTEGER;"))
+
+def run_migrations():
+    """
+    Run versioned Alembic migrations to head.
+    Raises RuntimeError on failure to prevent running with an incompatible schema.
+    Safely handles missing Alembic dependency, dynamic database URLs, and pre-existing schemas.
+    """
+    ini_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
+    if not os.path.exists(ini_path):
+        return
+
+    try:
+        from alembic.config import Config
+        from alembic import command
+    except (ImportError, ModuleNotFoundError) as err:
+        print(f"[Database] Notice: Alembic is not installed or importable ({err}). Skipping automatic migrations.")
+        return
+
+    try:
+        cfg = Config(ini_path)
+        # Ensure script_location is an absolute path to the alembic directory
+        scripts_dir = os.path.abspath(os.path.join(os.path.dirname(ini_path), "alembic"))
+        cfg.set_main_option("script_location", scripts_dir)
+
+        # Ensure Alembic targets the exact database URL resolved for this environment
+        db_url, _ = get_database_url_and_source()
+        if db_url:
+            cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Check if tables already exist but alembic_version is not yet stamped
+        from sqlalchemy import inspect
+        inspector = inspect(engine)
+        existing_tables = inspector.get_table_names()
+        if "alembic_version" not in existing_tables and len(existing_tables) > 1:
+            # Schema was created by Base.metadata.create_all; stamp head as baseline
+            command.stamp(cfg, "head")
+        else:
             try:
-                _conn.execute(text("ALTER TABLE orders ALTER COLUMN distance_km TYPE DOUBLE PRECISION;"))
-                _conn.execute(text("ALTER TABLE trips ALTER COLUMN distance TYPE DOUBLE PRECISION;"))
-            except Exception:
-                pass
-            _conn.commit()
-except Exception:
-    pass
+                command.upgrade(cfg, "head")
+            except Exception as up_err:
+                # If migration fails because indexes/tables already exist, stamp head
+                if "already exists" in str(up_err).lower():
+                    command.stamp(cfg, "head")
+                else:
+                    raise up_err
+    except Exception as e:
+        raise RuntimeError(f"Database migration failed: {e}") from e
+
 
 SessionLocal = sessionmaker(
     autocommit=False,

@@ -6,7 +6,7 @@ from typing import Optional, List, Union
 
 from app.database.connection import get_db
 from app.database.models import Order, Trip, CARGO_CATEGORIES, User
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 
 router = APIRouter(
     prefix="/orders",
@@ -309,12 +309,11 @@ def create_order(
     dimension_unit: str = "cm",
     package_count: int = 1,
     company_id: int = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    curr_company_id = current_user.company_id if current_user else 1
-    curr_user_id = current_user.id if current_user else None
-    target_company_id = company_id if (company_id and company_id != 1) else curr_company_id
+    target_company_id = current_user.company_id
+    curr_user_id = current_user.id
 
     # Compute and validate dimensions & volume
     val_l, val_w, val_h, val_unit, val_pkgs, calculated_volume = compute_and_validate_volume(
@@ -484,7 +483,7 @@ def _haversine_road_distance(lat1: float, lon1: float, lat2: float, lon2: float)
 @router.post("/bulk")
 def bulk_create_orders(
     payload: BulkOrderRequest,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -497,8 +496,8 @@ def bulk_create_orders(
     from app.optimization.india_gazetteer import search_local_gazetteer
 
     created = []
-    curr_company_id = current_user.company_id if current_user else 1
-    curr_user_id = current_user.id if current_user else None
+    curr_company_id = current_user.company_id
+    curr_user_id = current_user.id
     now_utc = datetime.now(timezone.utc)
 
     for item in payload.orders:
@@ -605,11 +604,11 @@ def get_orders(
     status: Optional[str] = None,
     cargo_category: Optional[str] = None,
     urgency: Optional[str] = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     query = db.query(Order).filter(
-        (Order.user_id == current_user.id) | (Order.company_id == current_user.company_id)
+        Order.company_id == current_user.company_id
     )
     if status:
         query = query.filter(Order.status == status)
@@ -640,16 +639,14 @@ def get_orders(
 @router.get("/{order_id}/tracking")
 def get_order_tracking(
     order_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
     order = (
         db.query(Order)
         .filter(
             Order.id == order_id,
-            (Order.company_id == comp_id) | (Order.user_id == user_id)
+            Order.company_id == current_user.company_id
         )
         .first()
     )
@@ -680,16 +677,14 @@ def get_order_tracking(
 @router.get("/{order_id}")
 def get_order(
     order_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
     order = (
         db.query(Order)
         .filter(
             Order.id == order_id,
-            (Order.company_id == comp_id) | (Order.user_id == user_id)
+            Order.company_id == current_user.company_id
         )
         .first()
     )
@@ -738,13 +733,13 @@ def update_order(
     dimension_unit: str = None,
     package_count: int = None,
     status: str = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    query = db.query(Order).filter(Order.id == order_id)
-    if current_user and current_user.company_id:
-        query = query.filter(Order.company_id == current_user.company_id)
-    order = query.first()
+    order = db.query(Order).filter(
+        Order.id == order_id,
+        Order.company_id == current_user.company_id
+    ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -871,7 +866,7 @@ def update_order(
 @router.delete("/{order_id}")
 def delete_order(
     order_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     order = db.query(Order).filter(Order.id == order_id, Order.company_id == current_user.company_id).first()
@@ -902,11 +897,12 @@ def delete_order(
 @router.get("/{order_id}/trips")
 def get_order_trips(
     order_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     order = (
         db.query(Order)
-        .filter(Order.id == order_id)
+        .filter(Order.id == order_id, Order.company_id == current_user.company_id)
         .first()
     )
 

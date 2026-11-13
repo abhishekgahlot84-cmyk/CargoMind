@@ -10,7 +10,7 @@ from app.database.models import (
     GPSTracking,
     User,
 )
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 
 
 router = APIRouter(
@@ -20,7 +20,7 @@ router = APIRouter(
 
 @router.get("/summary")
 def get_dashboard_summary(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     comp_id = current_user.company_id
@@ -108,7 +108,7 @@ def get_dashboard_summary(
 
 @router.get("/active-trips")
 def get_active_trips(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     comp_id = current_user.company_id

@@ -1,105 +1,33 @@
 import os
-import time
-import hmac
-import hashlib
-import base64
-import json
 import requests
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.database.models import User, Company
+from app.security import (
+    create_access_token,
+    verify_access_token,
+    hash_password,
+    verify_and_update_password,
+)
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"]
 )
 
-JWT_SECRET = os.getenv("JWT_SECRET", "cargomind-fleet-intelligence-secret-key-2026")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_SECONDS = 7 * 24 * 3600  # 7 days
-
-
-def base64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
-
-
-def base64url_decode(data_str: str) -> bytes:
-    padding = "=" * (4 - (len(data_str) % 4))
-    return base64.urlsafe_b64decode(data_str + padding)
-
-
-def create_access_token(user_id: int, email: str, role: str) -> str:
-    """Create a standard HS256 signed JWT token."""
-    header = {"alg": JWT_ALGORITHM, "typ": "JWT"}
-    now = int(time.time())
-    payload = {
-        "sub": str(user_id),
-        "email": email,
-        "role": role,
-        "iat": now,
-        "exp": now + JWT_EXPIRATION_SECONDS
-    }
-
-    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
-    header_encoded = base64url_encode(header_bytes)
-    payload_encoded = base64url_encode(payload_bytes)
-
-    signing_input = f"{header_encoded}.{payload_encoded}".encode("utf-8")
-    signature = hmac.new(JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    signature_encoded = base64url_encode(signature)
-
-    return f"{header_encoded}.{payload_encoded}.{signature_encoded}"
-
-
-def verify_access_token(token: str) -> dict:
-    """Verify standard HS256 signed JWT token."""
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token structure"
-        )
-
-    header_encoded, payload_encoded, signature_encoded = parts
-    signing_input = f"{header_encoded}.{payload_encoded}".encode("utf-8")
-    expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
-    expected_sig_encoded = base64url_encode(expected_sig)
-
-    if not hmac.compare_digest(signature_encoded, expected_sig_encoded):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token signature"
-        )
-
-    try:
-        payload_bytes = base64url_decode(payload_encoded)
-        payload = json.loads(payload_bytes.decode("utf-8"))
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not parse token payload"
-        )
-
-    if "exp" in payload and int(time.time()) > payload["exp"]:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session has expired. Please log in again."
-        )
-
-    return payload
-
 
 def get_current_user(
     authorization: str = Header(None),
     db: Session = Depends(get_db)
 ) -> User:
-    """FastAPI dependency to extract and validate the authenticated user."""
+    """
+    FastAPI dependency to extract and validate the authenticated user.
+    Strictly enforces valid JWT Bearer authentication.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -109,7 +37,14 @@ def get_current_user(
     token = authorization.split(" ")[1]
     payload = verify_access_token(token)
 
-    user_id = int(payload.get("sub", 0))
+    try:
+        user_id = int(payload.get("sub", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user identifier in token."
+        )
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
@@ -123,40 +58,30 @@ def get_current_user(
 def get_current_user_optional(
     authorization: str = Header(None),
     db: Session = Depends(get_db)
-) -> User:
+) -> Optional[User]:
     """
-    FastAPI dependency: Returns the authenticated User if a valid Bearer token is provided.
-    If no token is provided or invalid, falls back to the default demo admin user (company_id=1).
+    Optional user helper: Returns the authenticated User if a valid Bearer token is provided.
+    If no token is provided or invalid, returns None (NEVER falls back to demo admin user).
     """
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
         try:
             payload = verify_access_token(token)
             user_id = int(payload.get("sub", 0))
-            user = db.query(User).filter(User.id == user_id).first()
-            if user:
-                return user
+            return db.query(User).filter(User.id == user_id).first()
         except Exception:
-            pass
+            return None
+    return None
 
-    # Fallback to default admin or first user
-    fallback = db.query(User).filter(User.id == 1).first()
-    if not fallback:
-        company = db.query(Company).filter(Company.id == 1).first()
-        if not company:
-            company = Company(id=1, name="CargoMind Fleet Org", email="admin@cargomind.ai", phone="+1234567890")
-            db.add(company)
-            db.commit()
-            db.refresh(company)
-        fallback = User(
-            id=1,
-            name="Fleet Administrator",
-            email="admin@cargomind.ai",
-            password="admin",
-            role="admin",
-            company_id=1
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Enforces that the authenticated user possesses administrator privileges."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrative privileges are required for this action."
         )
-    return fallback
+    return current_user
 
 
 def seed_starter_fleet_for_company(db: Session, company_id: int, user_name: str, user_id: Optional[int] = None):
@@ -321,6 +246,24 @@ def authenticate_google(
     email = id_info.get("email", "").strip().lower()
     name = id_info.get("name") or email.split("@")[0]
 
+    # Enforce verified email
+    email_verified = id_info.get("email_verified")
+    if email_verified not in (True, "true", "True", 1):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google account email is not verified. Please verify your email with Google."
+        )
+
+    # Validate audience against GOOGLE_CLIENT_ID if configured
+    google_client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip().strip("'\"")
+    if google_client_id:
+        token_aud = id_info.get("aud")
+        if token_aud != google_client_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Google token audience does not match configured Google Client ID."
+            )
+
     if not email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -428,18 +371,29 @@ def login_standard(
         user = User(
             name="Fleet Administrator",
             email=email,
-            password=request.password,
+            password=hash_password(request.password),
             role="admin",
             company_id=company.id
         )
         db.add(user)
         db.commit()
         db.refresh(user)
-    elif not user or (user.password != request.password and user.password != "[google_oauth_authenticated]"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password."
-        )
+    else:
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password."
+            )
+        is_valid, new_hash = verify_and_update_password(request.password, user.password)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password."
+            )
+        # Transparently upgrade legacy plaintext password to bcrypt
+        if new_hash:
+            user.password = new_hash
+            db.commit()
 
     token = create_access_token(user.id, user.email, user.role)
     comp_record = db.query(Company).filter(Company.id == user.company_id).first()
@@ -497,7 +451,7 @@ def register_user(
     user = User(
         name=clean_name,
         email=email,
-        password=request.password,
+        password=hash_password(request.password),
         role=request.role or "operator",
         company_id=comp_id
     )
@@ -608,11 +562,12 @@ def change_password(
             status_code=400,
             detail="Accounts created via Google Sign-In manage passwords through their Google Account."
         )
-    if current_user.password != req.current_password:
+    is_valid, _ = verify_and_update_password(req.current_password, current_user.password)
+    if not is_valid:
         raise HTTPException(status_code=400, detail="Incorrect current password.")
-    if len(req.new_password) < 4:
-        raise HTTPException(status_code=400, detail="New password must be at least 4 characters.")
-    current_user.password = req.new_password
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
+    current_user.password = hash_password(req.new_password)
     db.commit()
     return {"message": "Password updated successfully."}
 

@@ -20,6 +20,7 @@ import {
   UploadCloud,
   FileSpreadsheet,
   Check,
+  RotateCcw,
 } from "lucide-react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -37,6 +38,9 @@ export default function Trucks() {
   const [selectedStatus, setSelectedStatus] = useState("all");
 
   const [showModal, setShowModal] = useState(false);
+  const [resettingId, setResettingId] = useState(null);
+  const [resettingAll, setResettingAll] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -123,6 +127,38 @@ export default function Trucks() {
       setError("Unable to load fleet vehicles. Please verify backend connectivity.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResetTruckStatus(truck) {
+    try {
+      setResettingId(truck.id);
+      setError("");
+      const res = await api.post(`/trucks/${truck.id}/reset-status`);
+      setToastMessage(res.data?.message || `Truck ${truck.registration_number} status successfully reset to available.`);
+      setTimeout(() => setToastMessage(""), 4500);
+      await fetchTrucks();
+    } catch (err) {
+      console.error("Failed to reset truck status:", err);
+      setError(err.response?.data?.detail || `Failed to reset truck ${truck.registration_number}`);
+    } finally {
+      setResettingId(null);
+    }
+  }
+
+  async function handleResetAllIdle() {
+    try {
+      setResettingAll(true);
+      setError("");
+      const res = await api.post("/trucks/reset-all-idle");
+      setToastMessage(res.data?.message || "All idle vehicles successfully reset to available.");
+      setTimeout(() => setToastMessage(""), 4500);
+      await fetchTrucks();
+    } catch (err) {
+      console.error("Failed to reset all idle trucks:", err);
+      setError(err.response?.data?.detail || "Failed to reset idle fleet");
+    } finally {
+      setResettingAll(false);
     }
   }
 
@@ -307,11 +343,11 @@ export default function Trucks() {
       if (form.notes) params.notes = form.notes.trim();
 
       if (isEditing) {
-        await api.put(`/trucks/${editingId}`, null, { params });
+        await api.put(`/trucks/${editingId}`, params, { params });
         setFormSuccess("Vehicle updated.");
       } else {
         params.company_id = Number(user?.company_id || form.company_id || 1);
-        await api.post("/trucks/", null, { params });
+        await api.post("/trucks/", params, { params });
         setFormSuccess("Vehicle registered.");
       }
 
@@ -523,7 +559,16 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
           </div>
         </div>
 
-        <div className="flex gap-2.5">
+        <div className="flex flex-wrap gap-2.5">
+          <button
+            onClick={handleResetAllIdle}
+            disabled={resettingAll || loading}
+            className="apple-btn-secondary text-xs"
+            title="Reset status of all idle vehicles back to available"
+          >
+            <RotateCcw size={13} className={resettingAll ? "animate-spin" : ""} />
+            {resettingAll ? "Resetting..." : "Reset Idle Fleet"}
+          </button>
           <button onClick={handleOpenBulkModal} className="apple-btn-secondary text-xs">
             <UploadCloud size={14} />
             Bulk Import
@@ -542,6 +587,18 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
           </button>
         </div>
       </header>
+
+      {toastMessage && (
+        <div className="mb-6 flex items-center justify-between gap-2 rounded-2xl border border-[#34c759]/25 bg-[#34c759]/10 p-4 text-xs font-medium text-[#34c759] dark:text-[#30d158] transition-all animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="shrink-0" />
+            <span>{toastMessage}</span>
+          </div>
+          <button onClick={() => setToastMessage("")} className="text-[#34c759]/70 hover:text-[#34c759]">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
@@ -839,20 +896,45 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <span className={`apple-badge ${
-                          truck.status === "available"
-                            ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
-                            : truck.status === "assigned"
-                            ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
-                            : truck.status === "maintenance" || truck.status === "in_maintenance"
-                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25"
-                            : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
-                        }`}>
-                          {truck.status === "maintenance" ? "Maintenance" : truck.status || "Unknown"}
-                        </span>
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className={`apple-badge ${
+                            truck.status === "available"
+                              ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
+                              : truck.status === "assigned"
+                              ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
+                              : truck.status === "maintenance" || truck.status === "in_maintenance"
+                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25"
+                              : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
+                          }`}>
+                            {truck.status === "maintenance" ? "Maintenance" : truck.status || "Unknown"}
+                          </span>
+                          {truck.status !== "available" && (
+                            <button
+                              onClick={() => handleResetTruckStatus(truck)}
+                              disabled={resettingId === truck.id}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-[#0071e3] hover:underline dark:text-[#2997ff] transition"
+                              title="Reset status and mark vehicle as available for new dispatches"
+                            >
+                              <RotateCcw size={10} className={resettingId === truck.id ? "animate-spin" : ""} />
+                              <span>{resettingId === truck.id ? "Resetting..." : "Make Available"}</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => handleResetTruckStatus(truck)}
+                            disabled={resettingId === truck.id}
+                            className={`p-1 rounded-md transition ${
+                              truck.status !== "available"
+                                ? "text-[#0071e3] hover:bg-[#0071e3]/10 dark:text-[#2997ff]"
+                                : "text-[#86868b] hover:text-[#0071e3] hover:bg-black/[0.05] dark:hover:bg-white/[0.05]"
+                            }`}
+                            title="Reset Vehicle Status to Available"
+                          >
+                            <RotateCcw size={14} className={resettingId === truck.id ? "animate-spin" : ""} />
+                          </button>
                           <button
                             onClick={() => handleOpenLogs(truck)}
                             className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"

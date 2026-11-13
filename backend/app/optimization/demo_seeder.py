@@ -52,6 +52,18 @@ INDIAN_HUBS = [
     {"name": "Visakhapatnam Coastal Freight Terminal", "city": "Visakhapatnam", "state": "Andhra Pradesh", "lat": 17.6868, "lon": 83.2185, "type": "regional_hub", "cap": 280000},
     {"name": "Raipur Eastern Transit Hub", "city": "Raipur", "state": "Chhattisgarh", "lat": 21.2514, "lon": 81.6296, "type": "handover_hub", "cap": 115000},
     {"name": "Hyderabad Deccan Logistics Terminal", "city": "Hyderabad", "state": "Telangana", "lat": 17.3850, "lon": 78.4867, "type": "regional_hub", "cap": 220000},
+    # National North-South Highway Corridor Hubs (Leh - Delhi - Kanyakumari)
+    {"name": "Manali Himalayan Transit Hub", "city": "Manali", "state": "Himachal Pradesh", "lat": 32.2396, "lon": 77.1887, "type": "transit_hub", "cap": 75000},
+    {"name": "Kota Industrial Logistics Hub", "city": "Kota", "state": "Rajasthan", "lat": 25.1800, "lon": 75.8300, "type": "regional_hub", "cap": 110000},
+    {"name": "Sendhwa Nimar Border Depot", "city": "Sendhwa", "state": "Madhya Pradesh", "lat": 21.6888, "lon": 75.0975, "type": "transit_hub", "cap": 90000},
+    {"name": "Beed Highway Transit Depot", "city": "Beed", "state": "Maharashtra", "lat": 18.9891, "lon": 75.7601, "type": "transit_hub", "cap": 85000},
+    {"name": "Solapur Southern Transshipment Terminal", "city": "Solapur", "state": "Maharashtra", "lat": 17.6599, "lon": 75.9064, "type": "regional_hub", "cap": 140000},
+    {"name": "Hospet Vijayanagara Logistics Hub", "city": "Hospet", "state": "Karnataka", "lat": 15.2689, "lon": 76.3909, "type": "transit_hub", "cap": 95000},
+    {"name": "Bengaluru Electronic City Logistics Depot", "city": "Bengaluru", "state": "Karnataka", "lat": 12.9716, "lon": 77.5946, "type": "regional_hub", "cap": 350000},
+    {"name": "Dharmapuri Gateway Depot", "city": "Dharmapuri", "state": "Tamil Nadu", "lat": 12.1211, "lon": 78.1582, "type": "transit_hub", "cap": 90000},
+    {"name": "Madurai Pandyan Freight Terminal", "city": "Madurai", "state": "Tamil Nadu", "lat": 9.9252, "lon": 78.1198, "type": "regional_hub", "cap": 180000},
+    {"name": "Kovilpatti Highway Depot", "city": "Kovilpatti", "state": "Tamil Nadu", "lat": 9.1738, "lon": 77.8687, "type": "transit_hub", "cap": 75000},
+    {"name": "Kanyakumari Southern Cape Depot", "city": "Kanyakumari", "state": "Tamil Nadu", "lat": 8.0883, "lon": 77.5385, "type": "terminal_hub", "cap": 90000},
 ]
 
 TRUCK_SPECS = [
@@ -278,12 +290,12 @@ def reset_and_seed_demo_fleet(
             consec = rnd.randint(1, 3)
             last_rest_dt = now - timedelta(hours=rest_h)
         elif i < 15:
-            # Fair wellness
-            h24 = round(rnd.uniform(4.5, 6.5), 1)
-            h7d = round(rnd.uniform(30.0, 40.0), 1)
-            night_h = round(rnd.uniform(1.5, 2.5), 1)
-            rest_h = round(rnd.uniform(8.0, 10.0), 1)
-            consec = rnd.randint(3, 4)
+            # Fair wellness (65-79, assignable for relays and trips)
+            h24 = round(rnd.uniform(1.5, 3.0), 1)
+            h7d = round(rnd.uniform(20.0, 28.0), 1)
+            night_h = round(rnd.uniform(0.5, 1.5), 1)
+            rest_h = round(rnd.uniform(9.0, 12.0), 1)
+            consec = rnd.randint(1, 3)
             last_rest_dt = now - timedelta(hours=rest_h)
         else:
             # Needs rest (< 60)

@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   XCircle,
   Trash2,
+  RotateCcw,
 } from "lucide-react";
 import api from "../services/api";
 
@@ -22,6 +23,8 @@ export default function Trips() {
   const [allocating, setAllocating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(null);
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [resettingTripId, setResettingTripId] = useState(null);
 
   async function fetchData() {
     try {
@@ -90,6 +93,34 @@ export default function Trips() {
     }
   }
 
+  async function handleCompleteAndRelease(tripId) {
+    try {
+      setResettingTripId(tripId);
+      const res = await api.post(`/trips/${tripId}/complete-and-release`);
+      setActionSuccess(res.data?.message || `Trip #${tripId} completed. Resources released.`);
+      setTimeout(() => setActionSuccess(""), 4500);
+      await fetchData();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Failed to complete and release trip");
+    } finally {
+      setResettingTripId(null);
+    }
+  }
+
+  async function handleResetResources(tripId) {
+    try {
+      setResettingTripId(tripId);
+      const res = await api.post(`/trips/${tripId}/reset-resources`);
+      setActionSuccess(res.data?.message || `Resources for Trip #${tripId} reset to available.`);
+      setTimeout(() => setActionSuccess(""), 4500);
+      await fetchData();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Failed to reset resources");
+    } finally {
+      setResettingTripId(null);
+    }
+  }
+
   async function handleDeleteTrip(tripId) {
     if (!confirm(`Are you sure you want to delete Trip #${tripId}?`)) return;
     try {
@@ -129,6 +160,18 @@ export default function Trips() {
           Refresh
         </button>
       </header>
+
+      {actionSuccess && (
+        <div className="mb-6 flex items-center justify-between gap-2 rounded-2xl border border-[#34c759]/25 bg-[#34c759]/10 p-4 text-xs font-medium text-[#34c759] dark:text-[#30d158] transition-all animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="shrink-0" />
+            <span>{actionSuccess}</span>
+          </div>
+          <button onClick={() => setActionSuccess("")} className="text-[#34c759]/70 hover:text-[#34c759]">
+            <XCircle size={14} />
+          </button>
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-3">
@@ -320,11 +363,24 @@ export default function Trips() {
                         )}
                         {trip.status === "in_progress" && (
                           <button
-                            onClick={() => handleStatusChange(trip.id, "completed")}
-                            className="rounded-full bg-[#34c759]/10 px-2.5 py-1 text-[11px] font-semibold text-[#34c759] hover:bg-[#34c759]/20 dark:bg-[#30d158]/15 dark:text-[#30d158] transition"
-                            title="Mark completed"
+                            onClick={() => handleCompleteAndRelease(trip.id)}
+                            disabled={resettingTripId === trip.id}
+                            className="inline-flex items-center gap-1 rounded-full bg-[#34c759]/15 px-2.5 py-1 text-[11px] font-semibold text-[#34c759] hover:bg-[#34c759]/25 dark:bg-[#30d158]/20 dark:text-[#30d158] transition"
+                            title="Complete expedition and immediately release both truck and driver back to available"
                           >
-                            Complete
+                            <CheckCircle2 size={12} className={resettingTripId === trip.id ? "animate-spin" : ""} />
+                            <span>{resettingTripId === trip.id ? "Releasing..." : "Complete & Release"}</span>
+                          </button>
+                        )}
+                        {trip.status === "completed" && (
+                          <button
+                            onClick={() => handleResetResources(trip.id)}
+                            disabled={resettingTripId === trip.id}
+                            className="inline-flex items-center gap-1 rounded-full bg-[#0071e3]/10 px-2.5 py-1 text-[11px] font-semibold text-[#0071e3] hover:bg-[#0071e3]/20 dark:bg-[#2997ff]/15 dark:text-[#2997ff] transition"
+                            title="Reset assigned truck and driver status to available"
+                          >
+                            <RotateCcw size={11} className={resettingTripId === trip.id ? "animate-spin" : ""} />
+                            <span>{resettingTripId === trip.id ? "Resetting..." : "Reset Resources"}</span>
                           </button>
                         )}
                         {["planned", "in_progress"].includes(trip.status) && (

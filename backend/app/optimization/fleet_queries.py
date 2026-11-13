@@ -4,6 +4,7 @@ Ensures that the optimization dropdowns, SCIP load allocation, and VRP routing
 engines always evaluate the exact same trucks, drivers, and consignments.
 """
 
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any, Set
 from sqlalchemy.orm import Session
 from app.database.models import Truck, Driver, Order, Trip
@@ -14,10 +15,44 @@ def sync_fleet_resource_statuses(db: Session, company_id: Optional[int] = None) 
     Synchronize Truck and Driver status columns with their actual active trips in the database.
     - If a truck/driver has a planned trip -> 'assigned'
     - If a truck/driver has an in_progress trip -> 'in_trip' (truck) / 'busy' (driver)
-    - If a truck/driver has no active trips and was marked 'assigned' or 'in_trip' -> 'available'
+    - Automatically concludes in_progress trips that arrived > 1 hour ago (post-trip cooldown window)
+    - Expires truck turnaround windows (> 1h after trip completion) and driver rest windows
+    - If a truck/driver has no active trips and was marked 'assigned', 'in_trip', or 'turnaround' -> 'available'
     - Maintenance trucks remain 'maintenance'
     """
-    # Active trips
+    now_utc = datetime.now(timezone.utc)
+
+    # 1. Check in_progress trips: if trip completed > 1 hour ago, auto-transition to completed
+    candidate_trips = db.query(Trip).filter(Trip.status == "in_progress").all()
+    for trip in candidate_trips:
+        if trip.start_time:
+            try:
+                start_dt = datetime.fromisoformat(str(trip.start_time).replace("Z", "+00:00"))
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                dist = float(trip.distance or 100.0)
+                speed = float(trip.average_speed_kmph or 45.0)
+                duration_hours = max(0.5, dist / max(10.0, speed))
+                # Auto-complete if 1 hour has elapsed since destination arrival
+                arrival_dt = start_dt + timedelta(hours=duration_hours)
+                if now_utc >= arrival_dt + timedelta(hours=1.0):
+                    trip.status = "completed"
+                    trip.completed_at = arrival_dt.isoformat()
+                    order = db.query(Order).filter(Order.id == trip.order_id).first()
+                    if order and order.status != "completed":
+                        order.status = "completed"
+                    if trip.truck:
+                        trip.truck.trips_since_service = (trip.truck.trips_since_service or 0) + 1
+                        trip.truck.km_since_service = (trip.truck.km_since_service or 0.0) + dist
+            except Exception:
+                pass
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Active trips after auto-completion check
     active_trips = db.query(Trip).filter(
         Trip.status.in_(["planned", "in_progress"])
     ).all()
@@ -42,8 +77,23 @@ def sync_fleet_resource_statuses(db: Session, company_id: Optional[int] = None) 
     drivers_fixed = 0
 
     for truck in trucks:
-        if truck.status == "maintenance":
+        if truck.status in ("maintenance", "in_maintenance"):
             continue
+
+        # Check turnaround timer
+        if truck.turnaround_until:
+            try:
+                t_dt = datetime.fromisoformat(str(truck.turnaround_until).replace("Z", "+00:00"))
+                if t_dt.tzinfo is None:
+                    t_dt = t_dt.replace(tzinfo=timezone.utc)
+                if now_utc >= t_dt:
+                    truck.turnaround_until = None
+                    if truck.status == "turnaround":
+                        truck.status = "available"
+                        trucks_fixed += 1
+            except Exception:
+                truck.turnaround_until = None
+
         if truck.id in in_progress_trucks:
             if truck.status != "in_trip":
                 truck.status = "in_trip"
@@ -53,11 +103,28 @@ def sync_fleet_resource_statuses(db: Session, company_id: Optional[int] = None) 
                 truck.status = "assigned"
                 trucks_fixed += 1
         else:
-            if truck.status in ("assigned", "in_trip"):
+            if truck.status in ("assigned", "in_trip", "turnaround"):
                 truck.status = "available"
                 trucks_fixed += 1
 
     for driver in drivers:
+        # Check rest timer expiry
+        if driver.rest_until:
+            try:
+                r_dt = datetime.fromisoformat(str(driver.rest_until).replace("Z", "+00:00"))
+                if r_dt.tzinfo is None:
+                    r_dt = r_dt.replace(tzinfo=timezone.utc)
+                if now_utc >= r_dt:
+                    driver.rest_until = None
+                    driver.hours_driven_24h = 0.0
+                    driver.night_driving_hours = 0.0
+                    driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+                    if driver.status in ("resting", "busy"):
+                        driver.status = "available"
+                        drivers_fixed += 1
+            except Exception:
+                driver.rest_until = None
+
         if driver.id in in_progress_drivers:
             if driver.status != "busy":
                 driver.status = "busy"

@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database.connection import engine, Base
+from app.database.connection import engine, Base, run_migrations
+from app.security import validate_and_get_jwt_secret, is_production_environment
 # Explicitly import all models so every table is registered in Base.metadata before create_all
 from app.database.models import (  # noqa: F401
     Company,
@@ -39,18 +40,27 @@ from app.routes import (
     locations,
 )
 
+# Validate JWT_SECRET on startup (fails fast if missing/weak in production)
+validate_and_get_jwt_secret()
+
 app = FastAPI(
     title="CargoMind Fleet Intelligence API",
     description="Backend API for CargoMind AI-powered fleet and logistics intelligence.",
     version="2.0.0"
 )
-# Allowed origins for CORS: production Vercel frontend, FRONTEND_URL env var, and local dev
-allowed_origins = [
-    "https://cargo-mind-eight.vercel.app",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-]
+
+# CORS configuration: strict production origins vs development local origins
+if is_production_environment():
+    allowed_origins = [
+        "https://cargo-mind-eight.vercel.app",
+    ]
+else:
+    allowed_origins = [
+        "https://cargo-mind-eight.vercel.app",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+    ]
 
 frontend_url_env = os.getenv("FRONTEND_URL", "").strip()
 if frontend_url_env:
@@ -64,15 +74,15 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_origin_regex=r"^https://cargo-mind-[a-zA-Z0-9-]+\.vercel\.app$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
 )
 
-
-# Create database tables (adds new columns via SQLAlchemy for SQLite)
+# Create database tables and run versioned Alembic migrations
 Base.metadata.create_all(bind=engine)
+run_migrations()
 
-# Ensure default company exists and schema columns are synchronized
+# Ensure default company exists
 try:
     with engine.connect() as conn:
         result = conn.execute(text("SELECT id FROM companies WHERE id = 1")).first()
@@ -84,21 +94,8 @@ try:
                 except Exception:
                     pass
             conn.commit()
-
-        # Safe schema synchronization for driver rest tracking
-        try:
-            if engine.dialect.name == "postgresql":
-                conn.execute(text("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS rest_until VARCHAR(50);"))
-                conn.commit()
-            elif engine.dialect.name == "sqlite":
-                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(drivers);")).fetchall()]
-                if "rest_until" not in cols:
-                    conn.execute(text("ALTER TABLE drivers ADD COLUMN rest_until VARCHAR(50);"))
-                    conn.commit()
-        except Exception:
-            pass
 except Exception as e:
-    print("Default company seeding notice:", e)
+    print("[Startup] Notice while seeding default company:", e)
 
 app.include_router(auth.router)
 app.include_router(companies.router)

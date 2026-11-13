@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from typing import Optional, List, Union
 
 from app.database.connection import get_db
-from app.database.models import Driver, Trip, User, WellnessHistory
-from app.routes.auth import get_current_user_optional
+from app.database.models import Driver, Trip, Order, User, WellnessHistory
+from app.routes.auth import get_current_user
 from app.optimization.wellness import compute_driver_wellness, update_and_persist_driver_wellness
 
 
@@ -80,10 +80,10 @@ def create_driver(
     phone: str = None,
     notes: str = None,
     company_id: int = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    target_company_id = company_id if (company_id and company_id != 1) else current_user.company_id
+    target_company_id = current_user.company_id
 
     driver = Driver(
         name=name.strip(),
@@ -111,11 +111,11 @@ def create_driver(
 
 @router.get("/")
 def get_drivers(
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     drivers = db.query(Driver).filter(
-        (Driver.user_id == current_user.id) | (Driver.company_id == current_user.company_id)
+        Driver.company_id == current_user.company_id
     ).all()
     return [_driver_dict(d, db=db) for d in drivers]
 
@@ -123,7 +123,7 @@ def get_drivers(
 @router.get("/{driver_id}")
 def get_driver(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = (
@@ -153,14 +153,12 @@ def update_driver(
     rest_hours: float = None,
     notes: str = None,
     status: str = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    comp_id = current_user.company_id if current_user else 1
-    user_id = current_user.id if current_user else None
     driver = db.query(Driver).filter(
         Driver.id == driver_id,
-        (Driver.company_id == comp_id) | (Driver.user_id == user_id)
+        Driver.company_id == current_user.company_id
     ).first()
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
@@ -216,7 +214,7 @@ def update_driver(
 def delete_driver(
     driver_id: int,
     force: bool = False,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = db.query(Driver).filter(Driver.id == driver_id, Driver.company_id == current_user.company_id).first()
@@ -252,7 +250,7 @@ def delete_driver(
 @router.patch("/{driver_id}/deactivate")
 def deactivate_driver(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = db.query(Driver).filter(Driver.id == driver_id, Driver.company_id == current_user.company_id).first()
@@ -268,7 +266,7 @@ def deactivate_driver(
 @router.get("/{driver_id}/wellness")
 def get_driver_wellness(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = db.query(Driver).filter(
@@ -289,7 +287,7 @@ def get_driver_wellness(
 @router.post("/{driver_id}/wellness/recompute")
 def recompute_driver_wellness_endpoint(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = db.query(Driver).filter(
@@ -311,7 +309,7 @@ def recompute_driver_wellness_endpoint(
 def get_driver_wellness_history(
     driver_id: int,
     limit: int = 15,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     driver = db.query(Driver).filter(
@@ -346,7 +344,7 @@ def get_driver_wellness_history(
 def send_driver_to_rest(
     driver_id: int,
     payload: Optional[RestRequest] = None,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -388,7 +386,7 @@ def send_driver_to_rest(
 @router.post("/{driver_id}/end-rest")
 def end_driver_rest(
     driver_id: int,
-    current_user: User = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -415,21 +413,108 @@ def end_driver_rest(
     }
 
 
-@router.post("/bulk")
-def bulk_create_drivers(
-    payload: BulkDriverRequest,
-    current_user: User = Depends(get_current_user_optional),
+@router.post("/{driver_id}/reset-status")
+def reset_driver_status(
+    driver_id: int,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Bulk import multiple drivers at once from CSV or JSON list.
+    Force-reset a driver's status to 'available' within user's workspace.
+    Clears any active rest_until, clears shift fatigue, restores wellness score.
+    """
+    driver = db.query(Driver).filter(
+        Driver.id == driver_id,
+        Driver.company_id == current_user.company_id
+    ).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    # If there was a trip in_progress for this driver, complete it cleanly
+    in_progress_trip = db.query(Trip).filter(
+        Trip.driver_id == driver_id,
+        Trip.status == "in_progress"
+    ).first()
+    if in_progress_trip:
+        now_str = datetime.now(timezone.utc).isoformat()
+        in_progress_trip.status = "completed"
+        in_progress_trip.completed_at = in_progress_trip.completed_at or now_str
+        order = db.query(Order).filter(Order.id == in_progress_trip.order_id).first()
+        if order and order.status != "completed":
+            order.status = "completed"
+
+    driver.status = "available"
+    driver.rest_until = None
+    driver.hours_driven_24h = 0.0
+    driver.night_driving_hours = 0.0
+    driver.rest_hours = max(float(driver.rest_hours or 0.0), 8.0)
+
+    wellness = update_and_persist_driver_wellness(driver, db=db, persist_history=True)
+
+    try:
+        db.commit()
+        db.refresh(driver)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reset driver status: {str(e)}")
+
+    return {
+        "message": f"Driver {driver.name} is now reset to available for truck assignment.",
+        "driver": _driver_dict(driver, db=db)
+    }
+
+
+@router.post("/reset-all-idle")
+def reset_all_idle_drivers(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Reset all drivers in user's workspace that are not on active planned/in_progress trips back to 'available'.
+    """
+    active_driver_ids = {
+        r[0] for r in db.query(Trip.driver_id).filter(
+            Trip.status.in_(["planned", "in_progress"])
+        ).all() if r[0]
+    }
+
+    drivers = db.query(Driver).filter(
+        Driver.company_id == current_user.company_id
+    ).all()
+
+    reset_count = 0
+    for d in drivers:
+        if d.id not in active_driver_ids and d.status in ("assigned", "busy", "resting", "off_duty"):
+            d.status = "available"
+            d.rest_until = None
+            d.hours_driven_24h = 0.0
+            d.night_driving_hours = 0.0
+            d.rest_hours = max(float(d.rest_hours or 0.0), 8.0)
+            update_and_persist_driver_wellness(d, db=db, persist_history=False)
+            reset_count += 1
+
+    db.commit()
+    return {
+        "message": f"Reset {reset_count} idle drivers back to available.",
+        "reset_count": reset_count
+    }
+
+
+@router.post("/bulk")
+def bulk_create_drivers(
+    payload: BulkDriverRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk import multiple drivers at once into the user's workspace.
     """
     if not payload.drivers:
         raise HTTPException(status_code=400, detail="No drivers provided in payload")
 
     created = []
-    curr_company_id = current_user.company_id if current_user else 1
-    curr_user_id = current_user.id if current_user else None
+    curr_company_id = current_user.company_id
+    curr_user_id = current_user.id
 
     for item in payload.drivers:
         if not item.name or not item.name.strip():

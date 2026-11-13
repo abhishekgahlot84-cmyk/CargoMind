@@ -7,13 +7,13 @@ from fastapi.testclient import TestClient
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.routes.auth import get_current_user_optional
+from app.routes.auth import get_current_user
 from app.routes.optimization import router
 
 
 app = FastAPI()
 app.include_router(router)
-app.dependency_overrides[get_current_user_optional] = lambda: SimpleNamespace(id=1, company_id=1, role="admin")
+app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, company_id=1, role="admin")
 client = TestClient(app)
 
 
