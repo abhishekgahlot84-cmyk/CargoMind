@@ -49,18 +49,15 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS configuration: strict production origins vs development local origins
-if is_production_environment():
-    allowed_origins = [
-        "https://cargo-mind-eight.vercel.app",
-    ]
-else:
-    allowed_origins = [
-        "https://cargo-mind-eight.vercel.app",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-    ]
+# CORS configuration: allow production Vercel frontend, preview deployments, and localhost development
+allowed_origins = [
+    "https://cargo-mind-eight.vercel.app",
+    "https://cargo-mind.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 
 frontend_url_env = os.getenv("FRONTEND_URL", "").strip()
 if frontend_url_env:
@@ -72,11 +69,25 @@ if frontend_url_env:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"^https://cargo-mind-[a-zA-Z0-9-]+\.vercel\.app$",
+    allow_origin_regex=r"^https://cargo-mind(-[a-zA-Z0-9-]+)?\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
+
+# Global exception handler to guarantee CORS headers are present even on internal errors
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc):
+    import traceback
+    print(f"[Unhandled Server Error] {request.method} {request.url.path}: {exc}")
+    traceback.print_exc()
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error occurred. Please contact system administrator."}
+    )
 
 # Create database tables and run versioned Alembic migrations
 Base.metadata.create_all(bind=engine)

@@ -162,10 +162,11 @@ def init_engine():
     # If the user has a Render internal hostname (e.g. dpg-xxx-a) or an unreachable local Postgres,
     # safely fall back to local SQLite so developer workflow does not crash.
     try:
+        connect_args = {"connect_timeout": 10} if "postgresql" in db_url else {}
         test_engine = create_engine(
             db_url,
             pool_pre_ping=True,
-            connect_args={"connect_timeout": 3}
+            connect_args=connect_args
         )
         with test_engine.connect() as conn:
             pass

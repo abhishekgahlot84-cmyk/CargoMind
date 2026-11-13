@@ -114,8 +114,15 @@ def get_drivers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    company_id = current_user.company_id
+    if company_id and company_id != 1:
+        if db.query(Driver).filter(Driver.company_id == company_id).count() == 0:
+            from app.routes.auth import seed_starter_fleet_for_company
+            seed_starter_fleet_for_company(db, company_id, current_user.name, user_id=current_user.id)
+            db.commit()
+
     drivers = db.query(Driver).filter(
-        Driver.company_id == current_user.company_id
+        Driver.company_id == company_id
     ).all()
     return [_driver_dict(d, db=db) for d in drivers]
 

@@ -272,6 +272,12 @@ def get_trucks(
     from app.optimization.fleet_queries import get_available_trucks, sync_fleet_resource_statuses
 
     company_id = current_user.company_id
+    if company_id and company_id != 1:
+        if db.query(Truck).filter(Truck.company_id == company_id).count() == 0:
+            from app.routes.auth import seed_starter_fleet_for_company
+            seed_starter_fleet_for_company(db, company_id, current_user.name, user_id=current_user.id)
+            db.commit()
+
     sync_fleet_resource_statuses(db, company_id=company_id)
 
     if available_only:

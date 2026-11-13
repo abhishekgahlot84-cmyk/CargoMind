@@ -121,10 +121,10 @@ def plan_handover(
             detail=f"Trip #{data.trip_id} is not active (status: {trip.status})"
         )
 
-    # Validate hub belongs to current user's workspace
+    # Validate hub belongs to current user's workspace or shared national highway network
     hub = db.query(Hub).filter(
         Hub.id == data.hub_id,
-        Hub.company_id == current_user.company_id
+        (Hub.company_id == current_user.company_id) | (Hub.company_id == 1)
     ).first()
     if not hub:
         raise HTTPException(status_code=404, detail="Hub not found in your workspace")
@@ -506,7 +506,7 @@ def get_trip_handover_dashboard(
         coords = trip.planned_route.get("coordinates", [])
         if coords and len(coords) >= 2:
             hubs = db.query(Hub).filter(
-                Hub.company_id == current_user.company_id,
+                (Hub.company_id == current_user.company_id) | (Hub.company_id == 1),
                 Hub.operational_status == "active"
             ).all()
             from app.optimization.fleet_queries import get_available_drivers
@@ -577,7 +577,7 @@ def auto_plan_handovers_endpoint(
         raise HTTPException(status_code=400, detail="Planned route has invalid coordinates.")
 
     hubs = db.query(Hub).filter(
-        Hub.company_id == current_user.company_id,
+        (Hub.company_id == current_user.company_id) | (Hub.company_id == 1),
         Hub.operational_status == "active"
     ).all()
 
@@ -660,7 +660,7 @@ def get_corridor_hubs_for_trip(
     if not trip.planned_route or not isinstance(trip.planned_route, dict):
         # Fallback to active hubs in workspace if route not yet persisted
         hubs = db.query(Hub).filter(
-            Hub.company_id == current_user.company_id,
+            (Hub.company_id == current_user.company_id) | (Hub.company_id == 1),
             Hub.operational_status == "active"
         ).all()
         return [
@@ -677,7 +677,7 @@ def get_corridor_hubs_for_trip(
     coords = trip.planned_route.get("coordinates", [])
     cum = compute_cumulative_distances(coords)
     hubs = db.query(Hub).filter(
-        Hub.company_id == current_user.company_id,
+        (Hub.company_id == current_user.company_id) | (Hub.company_id == 1),
         Hub.operational_status == "active"
     ).all()
 
