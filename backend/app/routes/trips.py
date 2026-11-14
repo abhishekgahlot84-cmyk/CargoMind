@@ -988,6 +988,7 @@ def reset_trip_resources(
     if truck:
         truck.status = "available"
         truck.turnaround_until = None
+        trip.truck_id = None
 
     if driver:
         driver.status = "available"
@@ -999,6 +1000,7 @@ def reset_trip_resources(
             update_and_persist_driver_wellness(driver, db=db, persist_history=False)
         except Exception:
             pass
+        trip.driver_id = None
 
     try:
         db.commit()

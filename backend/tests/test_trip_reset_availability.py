@@ -80,7 +80,7 @@ def setup_data():
         id=1,
         company_id=1,
         weight=2000,
-        status="in_progress",
+        status="assigned",
         pickup_location="Delhi",
         delivery_location="Agra",
         deadline="2026-11-20T12:00:00Z",
@@ -91,7 +91,7 @@ def setup_data():
         driver_id=1,
         order_id=1,
         distance=200.0,
-        status="in_progress",
+        status="planned",
         start_time=(datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(),
         average_speed_kmph=45.0,
         user_id=1,
@@ -193,6 +193,7 @@ def test_auto_completion_after_1_hour_cooldown():
     # Trip started 5 hours ago for a 200km trip at 45km/h (takes ~4.44h).
     # 5 hours elapsed > 4.44h + 0.5h, so cooldown/arrival passed.
     trip = db.query(Trip).filter(Trip.id == 1).first()
+    trip.status = "in_progress"
     trip.start_time = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
     db.commit()
 
@@ -210,3 +211,78 @@ def test_auto_completion_after_1_hour_cooldown():
     driver = db.query(Driver).filter(Driver.id == 1).first()
     assert driver.status == "available"
     db.close()
+
+
+def test_reset_truck_already_available():
+    setup_data()
+    # First make it available
+    res = client.post("/trucks/1/reset-status")
+    assert res.status_code == 200
+    assert res.json()["truck"]["status"] == "available"
+
+    # Second call on already available truck (idempotent no-op)
+    res2 = client.post("/trucks/1/reset-status")
+    assert res2.status_code == 200
+    assert "already available" in res2.json()["message"]
+    assert res2.json()["truck"]["status"] == "available"
+
+
+def test_reset_truck_active_in_progress_trip_fails():
+    setup_data()
+    db = TestingSessionLocal()
+    trip = db.query(Trip).filter(Trip.id == 1).first()
+    trip.status = "in_progress"
+    db.commit()
+    db.close()
+
+    # Must reject making truck available while actively in transit on in-progress trip
+    res = client.post("/trucks/1/reset-status")
+    assert res.status_code == 400
+    assert "actively in transit" in res.json()["detail"]
+
+
+def test_reset_truck_under_maintenance_fails():
+    setup_data()
+    db = TestingSessionLocal()
+    truck = db.query(Truck).filter(Truck.id == 1).first()
+    truck.status = "maintenance"
+    db.commit()
+    db.close()
+
+    # Must reject making truck available while in maintenance
+    res = client.post("/trucks/1/reset-status")
+    assert res.status_code == 400
+    assert "under maintenance" in res.json()["detail"]
+
+
+def test_reset_truck_invalid_id_404():
+    setup_data()
+    res = client.post("/trucks/99999/reset-status")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "Truck not found"
+
+
+def test_reset_driver_active_in_progress_trip_fails():
+    setup_data()
+    db = TestingSessionLocal()
+    trip = db.query(Trip).filter(Trip.id == 1).first()
+    trip.status = "in_progress"
+    db.commit()
+    db.close()
+
+    # Must reject making driver available while actively in transit
+    res = client.post("/drivers/1/reset-status")
+    assert res.status_code == 400
+    assert "actively in transit" in res.json()["detail"]
+
+
+def test_reset_driver_already_available():
+    setup_data()
+    # First make driver available
+    res = client.post("/drivers/1/reset-status")
+    assert res.status_code == 200
+
+    # Second call is idempotent no-op
+    res2 = client.post("/drivers/1/reset-status")
+    assert res2.status_code == 200
+    assert "already available" in res2.json()["message"]

@@ -427,8 +427,9 @@ def reset_driver_status(
     db: Session = Depends(get_db)
 ):
     """
-    Force-reset a driver's status to 'available' within user's workspace.
+    Reset a driver's status to 'available' within user's workspace.
     Clears any active rest_until, clears shift fatigue, restores wellness score.
+    Releases planned trip reservations while protecting active in-transit trips.
     """
     driver = db.query(Driver).filter(
         Driver.id == driver_id,
@@ -437,18 +438,30 @@ def reset_driver_status(
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
 
-    # If there was a trip in_progress for this driver, complete it cleanly
+    if driver.status == "available":
+        return {
+            "message": f"Driver {driver.name} is already available.",
+            "driver": _driver_dict(driver, db=db)
+        }
+
+    # Active trip protection
     in_progress_trip = db.query(Trip).filter(
         Trip.driver_id == driver_id,
         Trip.status == "in_progress"
     ).first()
     if in_progress_trip:
-        now_str = datetime.now(timezone.utc).isoformat()
-        in_progress_trip.status = "completed"
-        in_progress_trip.completed_at = in_progress_trip.completed_at or now_str
-        order = db.query(Order).filter(Order.id == in_progress_trip.order_id).first()
-        if order and order.status != "completed":
-            order.status = "completed"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot make Driver {driver.name} available: Driver is actively in transit on Trip #{in_progress_trip.id}."
+        )
+
+    # Release driver from planned trips without deleting trips
+    planned_trips = db.query(Trip).filter(
+        Trip.driver_id == driver_id,
+        Trip.status == "planned"
+    ).all()
+    for pt in planned_trips:
+        pt.driver_id = None
 
     driver.status = "available"
     driver.rest_until = None

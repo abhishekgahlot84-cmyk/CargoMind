@@ -114,12 +114,27 @@ export default function Drivers() {
       setResettingId(driver.id);
       setError("");
       const res = await api.post(`/drivers/${driver.id}/reset-status`);
+      const updatedDriver = res.data?.driver;
+      if (updatedDriver) {
+        setDrivers((prev) =>
+          prev.map((d) => (d.id === driver.id ? { ...d, ...updatedDriver } : d))
+        );
+      }
       setToastMessage(res.data?.message || `Driver ${driver.name} is now available.`);
       setTimeout(() => setToastMessage(""), 4500);
       await fetchDrivers();
     } catch (err) {
       console.error("Failed to reset driver status:", err);
-      setError(err.response?.data?.detail || `Failed to reset driver ${driver.name}`);
+      const detail = err.response?.data?.detail;
+      let msg = `Failed to reset driver ${driver.name}`;
+      if (typeof detail === "string") {
+        msg = detail;
+      } else if (Array.isArray(detail)) {
+        msg = detail.map((d) => d.msg || JSON.stringify(d)).join(", ");
+      } else if (err.message) {
+        msg = err.message;
+      }
+      setError(msg);
     } finally {
       setResettingId(null);
     }

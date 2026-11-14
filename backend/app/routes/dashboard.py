@@ -11,6 +11,7 @@ from app.database.models import (
     User,
 )
 from app.routes.auth import get_current_user
+from app.optimization.fleet_queries import sync_fleet_resource_statuses
 
 
 router = APIRouter(
@@ -24,6 +25,7 @@ def get_dashboard_summary(
     db: Session = Depends(get_db)
 ):
     comp_id = current_user.company_id
+    sync_fleet_resource_statuses(db, company_id=comp_id)
 
     total_trucks = (
         db.query(Truck)

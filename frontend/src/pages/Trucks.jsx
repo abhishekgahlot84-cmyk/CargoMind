@@ -135,12 +135,30 @@ export default function Trucks() {
       setResettingId(truck.id);
       setError("");
       const res = await api.post(`/trucks/${truck.id}/reset-status`);
+      
+      // Update vehicle in state immediately for responsive feedback
+      const updatedTruck = res.data?.truck;
+      if (updatedTruck) {
+        setTrucks((prev) =>
+          prev.map((t) => (t.id === truck.id ? { ...t, ...updatedTruck } : t))
+        );
+      }
+
       setToastMessage(res.data?.message || `Truck ${truck.registration_number} status successfully reset to available.`);
       setTimeout(() => setToastMessage(""), 4500);
       await fetchTrucks();
     } catch (err) {
       console.error("Failed to reset truck status:", err);
-      setError(err.response?.data?.detail || `Failed to reset truck ${truck.registration_number}`);
+      const detail = err.response?.data?.detail;
+      let msg = `Failed to reset truck ${truck.registration_number}`;
+      if (typeof detail === "string") {
+        msg = detail;
+      } else if (Array.isArray(detail)) {
+        msg = detail.map((d) => d.msg || JSON.stringify(d)).join(", ");
+      } else if (err.message) {
+        msg = err.message;
+      }
+      setError(msg);
     } finally {
       setResettingId(null);
     }
@@ -630,9 +648,9 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
             <Fuel size={18} className="text-[#ff9500] dark:text-[#ff9f0a]" />
           </div>
           <p className="mt-4 text-3xl font-semibold tracking-tight text-[#1d1d1f] dark:text-[#f5f5f7]">
-            {loading ? "—" : trucks.filter((t) => t.status === "assigned").length}
+            {loading ? "—" : trucks.filter((t) => t.status === "assigned" || t.status === "in_trip" || t.status === "turnaround").length}
           </p>
-          <p className="mt-1 text-xs text-[#86868b]">Currently en route</p>
+          <p className="mt-1 text-xs text-[#86868b]">Currently en route or staged</p>
         </div>
 
         <div className="apple-card p-6">
@@ -902,13 +920,25 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
                               ? "bg-[#34c759]/10 text-[#34c759] dark:bg-[#30d158]/15 dark:text-[#30d158]"
                               : truck.status === "assigned"
                               ? "bg-[#0071e3]/10 text-[#0071e3] dark:bg-[#2997ff]/15 dark:text-[#2997ff]"
+                              : truck.status === "in_trip"
+                              ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/25"
+                              : truck.status === "turnaround"
+                              ? "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/25"
                               : truck.status === "maintenance" || truck.status === "in_maintenance"
                               ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25"
                               : "bg-black/[0.05] text-[#86868b] dark:bg-white/[0.08]"
                           }`}>
-                            {truck.status === "maintenance" ? "Maintenance" : truck.status || "Unknown"}
+                            {truck.status === "maintenance" || truck.status === "in_maintenance"
+                              ? "Maintenance"
+                              : truck.status === "in_trip"
+                              ? "In Transit"
+                              : truck.status === "turnaround"
+                              ? "Turnaround"
+                              : truck.status === "assigned"
+                              ? "Assigned"
+                              : truck.status || "Unknown"}
                           </span>
-                          {truck.status !== "available" && (
+                          {(truck.status === "assigned" || truck.status === "turnaround") && (
                             <button
                               onClick={() => handleResetTruckStatus(truck)}
                               disabled={resettingId === truck.id}
@@ -923,18 +953,16 @@ TS-09-GH-9900,14000,Diesel,Mahindra Blazo X 35,4.0,2023,60,45,Pharma & Industria
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handleResetTruckStatus(truck)}
-                            disabled={resettingId === truck.id}
-                            className={`p-1 rounded-md transition ${
-                              truck.status !== "available"
-                                ? "text-[#0071e3] hover:bg-[#0071e3]/10 dark:text-[#2997ff]"
-                                : "text-[#86868b] hover:text-[#0071e3] hover:bg-black/[0.05] dark:hover:bg-white/[0.05]"
-                            }`}
-                            title="Reset Vehicle Status to Available"
-                          >
-                            <RotateCcw size={14} className={resettingId === truck.id ? "animate-spin" : ""} />
-                          </button>
+                          {(truck.status === "assigned" || truck.status === "turnaround") && (
+                            <button
+                              onClick={() => handleResetTruckStatus(truck)}
+                              disabled={resettingId === truck.id}
+                              className="p-1 rounded-md text-[#0071e3] hover:bg-[#0071e3]/10 dark:text-[#2997ff] transition"
+                              title="Reset Vehicle Status to Available"
+                            >
+                              <RotateCcw size={14} className={resettingId === truck.id ? "animate-spin" : ""} />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenLogs(truck)}
                             className="p-1 rounded-md text-[#86868b] hover:text-[#0071e3] hover:bg-[#0071e3]/10 transition dark:hover:text-[#2997ff]"

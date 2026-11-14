@@ -486,8 +486,17 @@ def reset_truck_status(
     db: Session = Depends(get_db)
 ):
     """
-    Force-reset a truck's status to 'available' within the authenticated user's workspace.
-    Clears turnaround buffers and restores operational readiness.
+    Reset an assigned or turnaround truck's status to 'available' within the authenticated user's workspace.
+    
+    Validation & Business Logic:
+    1. Validates that the truck belongs to the authenticated user's workspace (HTTP 404 if missing).
+    2. Maintenance status protection: If truck is under maintenance, rejects with HTTP 400.
+    3. Idempotent check: If truck is already available, returns early with no-op response.
+    4. Active trip protection: If truck is currently in transit on an in_progress trip, rejects with HTTP 400.
+    5. Planned trip reservation release: If truck is assigned to planned trips, releases the truck from
+       those reservations (sets trip.truck_id = None) without deleting trip/order/driver records.
+    6. Clears turnaround buffer (turnaround_until = None).
+    7. Updates truck status to 'available', persists to database, and returns updated record.
     """
     truck = db.query(Truck).filter(
         Truck.id == truck_id,
@@ -496,19 +505,40 @@ def reset_truck_status(
     if not truck:
         raise HTTPException(status_code=404, detail="Truck not found")
 
-    # If there was a trip in_progress for this truck, complete it cleanly
+    # 1. Maintenance status protection
+    if truck.status in ("maintenance", "in_maintenance"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Truck {truck.registration_number} is currently under maintenance. Complete maintenance service before marking it available."
+        )
+
+    # 2. Idempotent check
+    if truck.status == "available":
+        return {
+            "message": f"Truck {truck.registration_number} is already available.",
+            "truck": _truck_dict(truck)
+        }
+
+    # 3. Active in-progress trip validation (do NOT silently complete in-transit trips)
     in_progress_trip = db.query(Trip).filter(
         Trip.truck_id == truck_id,
         Trip.status == "in_progress"
     ).first()
     if in_progress_trip:
-        now_str = datetime.now(timezone.utc).isoformat()
-        in_progress_trip.status = "completed"
-        in_progress_trip.completed_at = in_progress_trip.completed_at or now_str
-        order = db.query(Order).filter(Order.id == in_progress_trip.order_id).first()
-        if order and order.status != "completed":
-            order.status = "completed"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot make Truck {truck.registration_number} available: Vehicle is actively in transit on Trip #{in_progress_trip.id}."
+        )
 
+    # 4. Cleanly release planned trip reservations so sync_fleet_resource_statuses doesn't revert status
+    planned_trips = db.query(Trip).filter(
+        Trip.truck_id == truck_id,
+        Trip.status == "planned"
+    ).all()
+    for pt in planned_trips:
+        pt.truck_id = None
+
+    # 5. Persist available status
     truck.status = "available"
     truck.turnaround_until = None
 
@@ -531,11 +561,12 @@ def reset_all_idle_trucks(
     db: Session = Depends(get_db)
 ):
     """
-    Reset all trucks in user's workspace that are not on active trips back to 'available'.
+    Reset all trucks in user's workspace that are not on in-progress trips back to 'available'.
+    Releases planned trip reservations and preserves maintenance status.
     """
-    active_truck_ids = {
+    in_progress_truck_ids = {
         r[0] for r in db.query(Trip.truck_id).filter(
-            Trip.status.in_(["planned", "in_progress"])
+            Trip.status == "in_progress"
         ).all() if r[0]
     }
 
@@ -545,12 +576,29 @@ def reset_all_idle_trucks(
 
     reset_count = 0
     for t in trucks:
-        if t.id not in active_truck_ids and t.status in ("assigned", "in_trip", "turnaround"):
+        if t.status in ("maintenance", "in_maintenance"):
+            continue
+        if t.id in in_progress_truck_ids:
+            continue
+        if t.status != "available":
+            # Release planned reservations
+            planned_trips = db.query(Trip).filter(
+                Trip.truck_id == t.id,
+                Trip.status == "planned"
+            ).all()
+            for pt in planned_trips:
+                pt.truck_id = None
+
             t.status = "available"
             t.turnaround_until = None
             reset_count += 1
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to reset idle trucks: {str(e)}")
+
     return {
         "message": f"Reset {reset_count} idle trucks back to available.",
         "reset_count": reset_count
